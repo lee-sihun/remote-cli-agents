@@ -129,7 +129,6 @@ export class ClaudeAdapter implements AgentAdapter {
     cwd?: string,
   ): void {
     const args = [
-      '-p', message,
       '--output-format', 'stream-json',
       '--verbose',
     ];
@@ -142,6 +141,9 @@ export class ClaudeAdapter implements AgentAdapter {
       args.push('--dangerously-skip-permissions');
     }
 
+    // -p 플래그를 마지막에 추가 (프롬프트는 stdin으로 전달)
+    args.push('-p');
+
     // CLAUDECODE 환경변수 제거 (중첩 실행 방지 우회)
     const env = { ...process.env, ...this.config?.env };
     delete env.CLAUDECODE;
@@ -149,9 +151,15 @@ export class ClaudeAdapter implements AgentAdapter {
     const proc = spawn('claude', args, {
       cwd: cwd || this.config?.cwd || process.cwd(),
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
     });
+
+    // stdin으로 프롬프트 전달 후 닫기 (cmd.exe 특수문자/길이 제한 방지)
+    if (proc.stdin) {
+      proc.stdin.write(message);
+      proc.stdin.end();
+    }
 
     const now = Date.now();
     const existingThread = this.threads.get(threadId);
