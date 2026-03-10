@@ -1,0 +1,425 @@
+import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { createInterface } from 'node:readline';
+import type {
+  AgentConfig,
+  AgentEvent,
+  AgentStatus,
+  AgentMessage,
+  ToolCall,
+  ThreadSummary,
+} from '@rca/shared';
+import type { AgentAdapter, AgentEventHandler } from './types.js';
+
+// JSON-RPC 요청
+interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id: number;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+// JSON-RPC 응답
+interface JsonRpcResponse {
+  jsonrpc: '2.0';
+  id?: number;
+  result?: unknown;
+  error?: { code: number; message: string };
+  method?: string;
+  params?: Record<string, unknown>;
+}
+
+// Codex 이벤트 파라미터 타입
+interface CodexItemDelta {
+  threadId?: string;
+  type?: string;
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  toolOutput?: string;
+  [key: string]: unknown;
+}
+
+// 스레드 정보
+interface ThreadInfo {
+  id: string;
+  title: string;
+  messages: AgentMessage[];
+  createdAt: number;
+  updatedAt: number;
+  cwd?: string;
+}
+
+export class CodexAdapter implements AgentAdapter {
+  readonly name = 'Codex';
+  readonly type = 'codex' as const;
+
+  private process: ChildProcess | null = null;
+  private threads = new Map<string, ThreadInfo>();
+  private eventHandlers: AgentEventHandler[] = [];
+  private config: AgentConfig | null = null;
+  private requestId = 0;
+  private pendingRequests = new Map<number, {
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
+  }>();
+  private initialized = false;
+  private status: AgentStatus = {
+    agent: 'codex',
+    state: 'idle',
+  };
+
+  // 현재 진행 중인 응답 텍스트 누적
+  private accumulatedText = new Map<string, string>();
+  private currentToolCalls = new Map<string, ToolCall>();
+
+  async start(config: AgentConfig): Promise<void> {
+    this.config = config;
+    await this.spawnAppServer();
+  }
+
+  async stop(): Promise<void> {
+    if (this.process && !this.process.killed) {
+      this.process.kill('SIGTERM');
+    }
+    this.process = null;
+    this.initialized = false;
+    this.threads.clear();
+    this.pendingRequests.clear();
+    this.accumulatedText.clear();
+    this.currentToolCalls.clear();
+    this.updateStatus('idle');
+  }
+
+  async isAvailable(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const cmd = process.platform === 'win32' ? 'where' : 'which';
+      execFile(cmd, ['codex'], (error) => {
+        resolve(!error);
+      });
+    });
+  }
+
+  sendMessage(threadId: string | undefined, message: string): void {
+    const tid = threadId || randomUUID();
+    const existingThread = this.threads.get(tid);
+
+    if (!existingThread) {
+      // 새 스레드 생성
+      const now = Date.now();
+      this.threads.set(tid, {
+        id: tid,
+        title: message.slice(0, 50),
+        messages: [],
+        createdAt: now,
+        updatedAt: now,
+        cwd: this.config?.cwd,
+      });
+
+      // 스레드 시작
+      this.sendRpc('thread/start', { threadId: tid })
+        .then(() => this.startTurn(tid, message))
+        .catch((err) => {
+          this.emit({
+            type: 'error',
+            threadId: tid,
+            agentType: 'codex',
+            error: `Failed to start thread: ${String(err)}`,
+          });
+        });
+    } else {
+      // 기존 스레드에 메시지 전송
+      this.startTurn(tid, message);
+    }
+  }
+
+  interrupt(threadId: string): void {
+    this.sendRpc('turn/interrupt', { threadId }).catch(() => {
+      // 인터럽트 실패 시 무시
+    });
+  }
+
+  onEvent(handler: AgentEventHandler): void {
+    this.eventHandlers.push(handler);
+  }
+
+  getStatus(): AgentStatus {
+    return { ...this.status };
+  }
+
+  async getThreads(): Promise<ThreadSummary[]> {
+    return Array.from(this.threads.values()).map((t) => ({
+      id: t.id,
+      agentType: 'codex' as const,
+      title: t.title,
+      lastMessage: t.messages.length > 0
+        ? t.messages[t.messages.length - 1].content.slice(0, 100)
+        : undefined,
+      messageCount: t.messages.length,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      cwd: t.cwd,
+    }));
+  }
+
+  // app-server 프로세스 생성
+  private async spawnAppServer(): Promise<void> {
+    const proc = spawn('codex', ['app-server'], {
+      cwd: this.config?.cwd || process.cwd(),
+      env: { ...process.env, ...this.config?.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    this.process = proc;
+
+    if (proc.stdout) {
+      const rl = createInterface({ input: proc.stdout });
+      rl.on('line', (line) => this.handleLine(line));
+    }
+
+    if (proc.stderr) {
+      proc.stderr.on('data', (chunk: Buffer) => {
+        console.error('[codex stderr]', chunk.toString());
+      });
+    }
+
+    proc.on('close', (code) => {
+      console.log(`[codex] app-server exited with code ${code}`);
+      this.initialized = false;
+      this.updateStatus('error');
+    });
+
+    proc.on('error', (err) => {
+      console.error(`[codex] Failed to spawn: ${err.message}`);
+      this.updateStatus('error');
+    });
+
+    // initialization handshake
+    await this.sendRpc('initialize', {
+      protocolVersion: '1.0',
+      clientInfo: { name: 'rca-server', version: '0.1.0' },
+    });
+
+    this.initialized = true;
+  }
+
+  // JSON-RPC 요청 전송
+  private sendRpc(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      if (!this.process || !this.process.stdin) {
+        reject(new Error('Codex app-server is not running'));
+        return;
+      }
+
+      const id = ++this.requestId;
+      const request: JsonRpcRequest = {
+        jsonrpc: '2.0',
+        id,
+        method,
+        params,
+      };
+
+      this.pendingRequests.set(id, { resolve, reject });
+
+      const data = JSON.stringify(request) + '\n';
+      this.process.stdin.write(data, (err) => {
+        if (err) {
+          this.pendingRequests.delete(id);
+          reject(err);
+        }
+      });
+
+      // 타임아웃 (30초)
+      setTimeout(() => {
+        if (this.pendingRequests.has(id)) {
+          this.pendingRequests.delete(id);
+          reject(new Error(`RPC timeout: ${method}`));
+        }
+      }, 30000);
+    });
+  }
+
+  // turn 시작 (메시지 전송)
+  private async startTurn(threadId: string, message: string): Promise<void> {
+    const thread = this.threads.get(threadId);
+    if (!thread) return;
+
+    const now = Date.now();
+    thread.messages.push({
+      id: randomUUID(),
+      role: 'user',
+      content: message,
+      timestamp: now,
+    });
+    thread.updatedAt = now;
+
+    this.updateStatus('running', threadId);
+    this.accumulatedText.set(threadId, '');
+
+    this.emit({
+      type: 'message_start',
+      threadId,
+      agentType: 'codex',
+    });
+
+    try {
+      await this.sendRpc('turn/start', {
+        threadId,
+        message: { role: 'user', content: message },
+      });
+    } catch (err) {
+      this.emit({
+        type: 'error',
+        threadId,
+        agentType: 'codex',
+        error: `Failed to start turn: ${String(err)}`,
+      });
+      this.updateStatus('idle');
+    }
+  }
+
+  // stdout 라인 처리
+  private handleLine(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    let msg: JsonRpcResponse;
+    try {
+      msg = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
+
+    // JSON-RPC 응답 (id가 있는 경우)
+    if (msg.id !== undefined && this.pendingRequests.has(msg.id)) {
+      const pending = this.pendingRequests.get(msg.id)!;
+      this.pendingRequests.delete(msg.id);
+
+      if (msg.error) {
+        pending.reject(new Error(msg.error.message));
+      } else {
+        pending.resolve(msg.result);
+      }
+      return;
+    }
+
+    // 이벤트 (notification - id가 없고 method가 있는 경우)
+    if (msg.method) {
+      this.handleEvent(msg.method, (msg.params || {}) as CodexItemDelta);
+    }
+  }
+
+  // Codex 이벤트 처리
+  private handleEvent(method: string, params: CodexItemDelta): void {
+    const threadId = params.threadId || this.status.activeThread || '';
+
+    switch (method) {
+      case 'turn/started': {
+        this.updateStatus('running', threadId);
+        break;
+      }
+
+      case 'item/delta': {
+        if (params.type === 'text' && params.text) {
+          // 텍스트 델타
+          const current = this.accumulatedText.get(threadId) || '';
+          this.accumulatedText.set(threadId, current + params.text);
+
+          this.emit({
+            type: 'message_delta',
+            threadId,
+            agentType: 'codex',
+            content: params.text,
+          });
+        } else if (params.type === 'tool_call') {
+          // 도구 호출 시작
+          const toolCall: ToolCall = {
+            id: params.toolCallId || randomUUID(),
+            name: params.toolName || 'unknown',
+            input: params.toolInput || {},
+            status: 'running',
+          };
+
+          this.currentToolCalls.set(threadId, toolCall);
+
+          this.emit({
+            type: 'tool_start',
+            threadId,
+            agentType: 'codex',
+            tool: toolCall,
+          });
+        } else if (params.type === 'tool_result') {
+          // 도구 결과
+          const toolCall = this.currentToolCalls.get(threadId);
+          if (toolCall) {
+            toolCall.output = params.toolOutput || params.text || '';
+            toolCall.status = 'completed';
+
+            this.emit({
+              type: 'tool_complete',
+              threadId,
+              agentType: 'codex',
+              tool: { ...toolCall },
+            });
+
+            this.currentToolCalls.delete(threadId);
+          }
+        }
+        break;
+      }
+
+      case 'turn/completed': {
+        const thread = this.threads.get(threadId);
+        const text = this.accumulatedText.get(threadId) || '';
+
+        const assistantMessage: AgentMessage = {
+          id: randomUUID(),
+          role: 'assistant',
+          content: text,
+          timestamp: Date.now(),
+        };
+
+        if (thread) {
+          thread.messages.push(assistantMessage);
+          thread.updatedAt = Date.now();
+        }
+
+        this.emit({
+          type: 'message_complete',
+          threadId,
+          agentType: 'codex',
+          message: assistantMessage,
+        });
+
+        this.accumulatedText.delete(threadId);
+        this.updateStatus('idle');
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  private emit(event: AgentEvent): void {
+    for (const handler of this.eventHandlers) {
+      try {
+        handler(event);
+      } catch {
+        // 이벤트 핸들러 오류 무시
+      }
+    }
+  }
+
+  private updateStatus(state: AgentStatus['state'], activeThread?: string): void {
+    this.status.state = state;
+    this.status.activeThread = activeThread;
+
+    this.emit({
+      type: 'status_change',
+      agentType: 'codex',
+      status: { ...this.status },
+    });
+  }
+}

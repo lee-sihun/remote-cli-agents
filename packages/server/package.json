@@ -1,0 +1,35 @@
+{
+  "name": "remote-cli-agents",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Web-based remote control for CLI coding agents",
+  "main": "./dist/index.js",
+  "bin": {
+    "rca": "./bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "web/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "uuid": "^11.1.0",
+    "qrcode-terminal": "^0.12.0",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@rca/shared": "*",
+    "@types/ws": "^8.5.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
+  },
+  "keywords": ["cli", "remote", "claude", "codex", "gemini", "coding-agent"],
+  "license": "MIT"
+}
