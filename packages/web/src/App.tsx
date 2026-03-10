@@ -91,7 +91,8 @@ export default function App() {
     if (ws.status === 'connected') {
       ws.send({ type: 'list_agents' });
     }
-  }, [ws.status, ws]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws.status]);
 
   // Request threads when agent changes
   useEffect(() => {
@@ -102,7 +103,8 @@ export default function App() {
         agentType: store.activeAgent,
       });
     }
-  }, [ws.status, store.activeAgent, ws]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws.status, store.activeAgent]);
 
   // Determine if current agent uses PTY mode
   const isPtyAgent =
