@@ -20,6 +20,7 @@ import CodeBlock from './CodeBlock';
 interface ChatViewProps {
   messages: AgentMessage[];
   streamingContent: string | null;
+  activeToolCalls?: ToolCall[];
 }
 
 // ─── Tool Call Card ───
@@ -231,7 +232,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
 
 // ─── Streaming Indicator ───
 
-function StreamingBubble({ content }: { content: string }) {
+function StreamingBubble({ content, toolCalls }: { content: string; toolCalls?: ToolCall[] }) {
   return (
     <div className="flex justify-start mb-4">
       <div className="shrink-0 mr-2 flex items-start">
@@ -240,6 +241,15 @@ function StreamingBubble({ content }: { content: string }) {
         </div>
       </div>
       <div className="max-w-[85%] sm:max-w-[70%] min-w-0">
+        {/* 스트리밍 중 tool calls */}
+        {toolCalls && toolCalls.length > 0 && (
+          <div className="mb-1">
+            {toolCalls.map((tool) => (
+              <ToolCallCard key={tool.id} tool={tool} />
+            ))}
+          </div>
+        )}
+
         <div className="bg-[var(--assistant-bubble)] text-[var(--assistant-bubble-text)] rounded-2xl rounded-bl-md px-4 py-2.5">
           {content ? (
             <div className="markdown-content text-sm">
@@ -290,6 +300,7 @@ function StreamingBubble({ content }: { content: string }) {
 export default function ChatView({
   messages,
   streamingContent,
+  activeToolCalls,
 }: ChatViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -343,7 +354,7 @@ export default function ChatView({
           <MessageBubble key={msg.id} message={msg} />
         ))}
         {streamingContent !== null && (
-          <StreamingBubble content={streamingContent} />
+          <StreamingBubble content={streamingContent} toolCalls={activeToolCalls} />
         )}
         <div ref={bottomRef} />
       </div>

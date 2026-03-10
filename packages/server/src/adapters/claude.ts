@@ -219,8 +219,18 @@ export class ClaudeAdapter implements AgentAdapter {
 
         switch (event.type) {
           case 'assistant': {
-            // stream-json 형식: message.content 배열에서 텍스트 추출
-            const msg = event.message as { content?: Array<{ type: string; text?: string; thinking?: string }> } | undefined;
+            // stream-json 형식: message.content 배열에서 텍스트/tool_use 추출
+            const msg = event.message as {
+              content?: Array<{
+                type: string;
+                text?: string;
+                thinking?: string;
+                id?: string;
+                name?: string;
+                input?: Record<string, unknown>;
+              }>;
+            } | undefined;
+
             if (msg?.content) {
               for (const block of msg.content) {
                 if (block.type === 'text' && block.text) {
@@ -231,52 +241,51 @@ export class ClaudeAdapter implements AgentAdapter {
                     agentType: 'claude',
                     content: block.text,
                   });
+                } else if (block.type === 'tool_use' && block.name) {
+                  // assistant 이벤트 내 tool_use 블록
+                  currentToolCall = {
+                    id: block.id || randomUUID(),
+                    name: block.name,
+                    input: block.input || {},
+                    status: 'running',
+                  };
+                  this.emit({
+                    type: 'tool_start',
+                    threadId,
+                    agentType: 'claude',
+                    tool: currentToolCall,
+                  });
                 }
               }
             }
-
-            // 기존 형식 호환
-            if (event.subtype === 'text' && event.text) {
-              accumulatedText += event.text;
-              this.emit({
-                type: 'message_delta',
-                threadId,
-                agentType: 'claude',
-                content: event.text,
-              });
-            }
             break;
           }
 
-          case 'tool_use': {
-            currentToolCall = {
-              id: event.tool_use_id || randomUUID(),
-              name: event.tool_name || 'unknown',
-              input: (event.tool_input as Record<string, unknown>) || {},
-              status: 'running',
-            };
+          case 'user': {
+            // tool_result (사용자 이벤트 내 tool 결과)
+            const userMsg = event.message as {
+              content?: Array<{
+                type: string;
+                content?: string;
+                tool_use_id?: string;
+                is_error?: boolean;
+              }>;
+            } | undefined;
 
-            this.emit({
-              type: 'tool_start',
-              threadId,
-              agentType: 'claude',
-              tool: currentToolCall,
-            });
-            break;
-          }
-
-          case 'tool_result': {
-            if (currentToolCall) {
-              currentToolCall.output = event.result || event.content || '';
-              currentToolCall.status = 'completed';
-
-              this.emit({
-                type: 'tool_complete',
-                threadId,
-                agentType: 'claude',
-                tool: { ...currentToolCall },
-              });
-              currentToolCall = null;
+            if (userMsg?.content) {
+              for (const block of userMsg.content) {
+                if (block.type === 'tool_result' && currentToolCall) {
+                  currentToolCall.output = block.content || '';
+                  currentToolCall.status = block.is_error ? 'failed' : 'completed';
+                  this.emit({
+                    type: 'tool_complete',
+                    threadId,
+                    agentType: 'claude',
+                    tool: { ...currentToolCall },
+                  });
+                  currentToolCall = null;
+                }
+              }
             }
             break;
           }
@@ -291,12 +300,13 @@ export class ClaudeAdapter implements AgentAdapter {
               this.status.model = event.model;
             }
 
-            // 최종 메시지 생성
+            // 최종 메시지 생성 (accumulatedText 없으면 result 필드 사용)
             messageCompleted = true;
+            const finalText = accumulatedText || (event.result as string) || '';
             const assistantMessage: AgentMessage = {
               id: randomUUID(),
               role: 'assistant',
-              content: accumulatedText,
+              content: finalText,
               timestamp: Date.now(),
             };
 

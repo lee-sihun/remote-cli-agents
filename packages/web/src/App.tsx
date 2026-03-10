@@ -130,6 +130,9 @@ export default function App() {
   const currentStreaming = store.activeThread
     ? store.streamingContent.get(store.activeThread) ?? null
     : null;
+  const currentToolCalls = store.activeThread
+    ? store.activeToolCalls.get(store.activeThread) || []
+    : [];
 
   // Check if agent is running
   const agentStatus = store.activeAgent
@@ -429,6 +432,7 @@ export default function App() {
             <ChatView
               messages={currentMessages}
               streamingContent={currentStreaming}
+              activeToolCalls={currentToolCalls}
             />
           )}
 

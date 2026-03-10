@@ -26,6 +26,7 @@ interface AgentState {
   // Messages
   messages: Map<string, AgentMessage[]>;
   streamingContent: Map<string, string>; // threadId -> partial content being streamed
+  activeToolCalls: Map<string, ToolCall[]>; // threadId -> 스트리밍 중 tool calls
 
   // Approvals
   pendingApprovals: (ToolCall & { threadId: string; agentType: AgentType })[];
@@ -63,6 +64,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   messages: new Map(),
   streamingContent: new Map(),
+  activeToolCalls: new Map(),
 
   pendingApprovals: [],
 
@@ -131,10 +133,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
         switch (event.type) {
           case 'message_start': {
-            // A new assistant message is starting. Clear streaming buffer.
+            // 새 assistant 메시지 시작. 스트리밍 버퍼 및 tool calls 초기화.
             const sc = new Map(state.streamingContent);
             sc.set(event.threadId, '');
-            set({ streamingContent: sc });
+            const atc = new Map(state.activeToolCalls);
+            atc.delete(event.threadId);
+            set({ streamingContent: sc, activeToolCalls: atc });
             break;
           }
 
@@ -148,10 +152,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           }
 
           case 'message_complete': {
-            // Finalize: add the complete message, clear streaming
+            // 스트리밍 중 tool calls를 메시지에 첨부
+            const pendingTools = state.activeToolCalls.get(event.threadId) || [];
+            const completeMessage = pendingTools.length > 0
+              ? { ...event.message, toolCalls: [...(event.message.toolCalls || []), ...pendingTools] }
+              : event.message;
+
             const messages = new Map(state.messages);
             const existing = messages.get(event.threadId) || [];
-            messages.set(event.threadId, [...existing, event.message]);
+            messages.set(event.threadId, [...existing, completeMessage]);
 
             const sc = new Map(state.streamingContent);
             sc.delete(event.threadId);
@@ -187,62 +196,38 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               threads.set(event.agentType, agentThreads);
             }
 
-            set({ messages, streamingContent: sc, threads });
+            // activeToolCalls 정리
+            const atc = new Map(state.activeToolCalls);
+            atc.delete(event.threadId);
+
+            set({ messages, streamingContent: sc, threads, activeToolCalls: atc });
             break;
           }
 
           case 'tool_start': {
-            // Update last assistant message with tool call info
-            const messages = new Map(state.messages);
-            const threadMsgs = messages.get(event.threadId) || [];
-            const lastAssistant = [...threadMsgs]
-              .reverse()
-              .find((m) => m.role === 'assistant');
-            if (lastAssistant) {
-              const tools = lastAssistant.toolCalls
-                ? [...lastAssistant.toolCalls]
-                : [];
-              const existingIdx = tools.findIndex(
-                (t) => t.id === event.tool.id,
-              );
-              if (existingIdx >= 0) {
-                tools[existingIdx] = event.tool;
-              } else {
-                tools.push(event.tool);
-              }
-              const updated = threadMsgs.map((m) =>
-                m.id === lastAssistant.id
-                  ? { ...m, toolCalls: tools }
-                  : m,
-              );
-              messages.set(event.threadId, updated);
-              set({ messages });
-            }
+            // 스트리밍 중이면 activeToolCalls에 저장
+            const atc = new Map(state.activeToolCalls);
+            const existing = atc.get(event.threadId) || [];
+            atc.set(event.threadId, [...existing, event.tool]);
+            set({ activeToolCalls: atc });
             break;
           }
 
           case 'tool_complete': {
-            const messages = new Map(state.messages);
-            const threadMsgs = messages.get(event.threadId) || [];
-            // Find message with this tool call and update it
-            const updated = threadMsgs.map((m) => {
-              if (!m.toolCalls) return m;
-              const toolIdx = m.toolCalls.findIndex(
-                (t) => t.id === event.tool.id,
-              );
-              if (toolIdx < 0) return m;
-              const tools = [...m.toolCalls];
-              tools[toolIdx] = event.tool;
-              return { ...m, toolCalls: tools };
-            });
-            messages.set(event.threadId, updated);
+            // activeToolCalls에서 업데이트
+            const atc = new Map(state.activeToolCalls);
+            const tools = atc.get(event.threadId) || [];
+            const updatedTools = tools.map((t) =>
+              t.id === event.tool.id ? event.tool : t,
+            );
+            atc.set(event.threadId, updatedTools);
 
-            // Remove from pending approvals if it was there
+            // Remove from pending approvals
             const pendingApprovals = state.pendingApprovals.filter(
               (a) => a.id !== event.tool.id,
             );
 
-            set({ messages, pendingApprovals });
+            set({ activeToolCalls: atc, pendingApprovals });
             break;
           }
 
