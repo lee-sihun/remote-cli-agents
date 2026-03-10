@@ -12,7 +12,8 @@
     "dev": "npm run dev:server & npm run dev:web",
     "dev:server": "npm run dev -w packages/server",
     "dev:web": "npm run dev -w packages/web",
-    "build": "npm run build -w packages/shared && npm run build -w packages/server && npm run build -w packages/web",
+    "build": "npm run build -w packages/shared && npm run build -w packages/server && npm run build -w packages/web && npm run postbuild",
+    "postbuild": "node -e \"const fs=require('fs');const p=require('path');const s=p.join('packages','web','dist');const d=p.join('packages','server','web');fs.cpSync(s,d,{recursive:true,force:true});console.log('Web client copied to server/web/')\"",
     "start": "npm run start -w packages/server"
   },
   "license": "MIT"
