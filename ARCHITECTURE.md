@@ -412,27 +412,27 @@ rca relay --port 8080
 ## 9. 구현 페이즈
 
 ### Phase 1: MVP (핵심 동작)
-- [ ] 프로젝트 세팅 (monorepo, TypeScript, 빌드)
-- [ ] Bridge Server 기본 구조 (HTTP + WebSocket)
-- [ ] Claude Code Adapter (stream-json 모드)
-- [ ] 릴레이 서버 (Remodex relay.js 포팅)
-- [ ] QR 코드 생성 & 페어링
-- [ ] Web Client 기본 UI (대화 뷰, 입력, 연결)
-- [ ] LAN 직접 연결 + 릴레이 연결
+- [x] 프로젝트 세팅 (monorepo, TypeScript, 빌드)
+- [x] Bridge Server 기본 구조 (HTTP + WebSocket)
+- [x] Claude Code Adapter (stream-json 모드)
+- [x] 릴레이 서버 (Remodex relay.js 포팅)
+- [x] QR 코드 생성 & 페어링
+- [x] Web Client 기본 UI (대화 뷰, 입력, 연결)
+- [x] LAN 직접 연결 + 릴레이 연결
 
 ### Phase 2: 멀티 에이전트
-- [ ] Codex Adapter (app-server JSON-RPC)
-- [ ] Generic PTY Adapter (node-pty + xterm.js)
-- [ ] Gemini CLI 지원 (PTY 모드)
-- [ ] 에이전트 선택 UI
-- [ ] 스레드 관리 (목록, 전환)
+- [x] Codex Adapter (app-server JSON-RPC)
+- [x] Generic PTY Adapter (node-pty + xterm.js)
+- [x] Gemini CLI 지원 (PTY 모드)
+- [x] 에이전트 선택 UI
+- [x] 스레드 관리 (목록, 전환)
 
 ### Phase 3: 편의 기능
-- [ ] Git 통합 UI (status, commit, push 등)
-- [ ] 파일 브라우저
-- [ ] 승인/거부 플로우
-- [ ] PWA 설치 (모바일 앱처럼)
-- [ ] 다크/라이트 테마
+- [x] Git 통합 UI (status, commit, push 등)
+- [x] 파일 브라우저
+- [x] 승인/거부 플로우
+- [x] PWA 설치 (모바일 앱처럼)
+- [x] 다크/라이트 테마
 - [ ] 세션 히스토리 저장 (SQLite)
 
 ### Phase 4: 배포 & 완성
