@@ -302,10 +302,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
 
       case 'connection_status': {
-        set({
-          connectionStatus:
-            msg.status === 'reconnecting' ? 'connecting' : msg.status,
-        });
+        const newStatus = msg.status === 'reconnecting' ? 'connecting' : msg.status;
+        const updates: Partial<AgentState> = { connectionStatus: newStatus };
+
+        // 재연결 시 이전 에이전트 상태 초기화 (서버가 fresh 상태)
+        if (newStatus === 'connected') {
+          updates.agentStatuses = new Map();
+          updates.streamingContent = new Map();
+          updates.pendingApprovals = [];
+        }
+
+        set(updates);
         break;
       }
 
