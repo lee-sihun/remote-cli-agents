@@ -18,6 +18,7 @@ import { CodexAdapter } from './adapters/codex.js';
 import { GeminiAdapter } from './adapters/gemini.js';
 import { PtyAdapter } from './adapters/pty.js';
 import { setupRelay, getRelayStats } from './relay/relay.js';
+import * as store from './store.js';
 import { sessionManager } from './session.js';
 import { handleGit } from './handlers/git.js';
 import { listDirectory, readFileContent } from './handlers/file.js';
@@ -338,6 +339,16 @@ async function handleClientMessage(
         type: 'threads_list',
         agentType: msg.agentType,
         threads,
+      });
+      break;
+    }
+
+    case 'get_thread_messages': {
+      const messages = store.loadMessages(msg.threadId);
+      sendToClient(ws, {
+        type: 'thread_messages',
+        threadId: msg.threadId,
+        messages,
       });
       break;
     }

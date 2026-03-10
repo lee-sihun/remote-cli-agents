@@ -10,6 +10,7 @@ import type {
   ThreadSummary,
 } from '@rca/shared';
 import type { AgentAdapter, AgentEventHandler } from './types.js';
+import * as store from '../store.js';
 
 // Claude stream-json 이벤트 타입
 interface ClaudeStreamEvent {
@@ -55,17 +56,33 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async start(config: AgentConfig): Promise<void> {
     this.config = config;
+
+    // 저장된 스레드 복원 (프로세스 없이 메타데이터만)
+    const saved = store.loadThreads('claude');
+    for (const t of saved) {
+      if (!this.threads.has(t.id)) {
+        this.threads.set(t.id, {
+          id: t.id,
+          process: null as unknown as ChildProcess,
+          sessionId: undefined,
+          title: t.title,
+          messages: store.loadMessages(t.id),
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+          cwd: t.cwd,
+        });
+      }
+    }
   }
 
   async stop(): Promise<void> {
-    // 모든 활성 프로세스 종료
+    // 활성 프로세스만 종료 (스레드 데이터는 유지)
     for (const [, thread] of this.threads) {
       if (thread.timeout) clearTimeout(thread.timeout);
       if (thread.process && !thread.process.killed) {
         thread.process.kill('SIGTERM');
       }
     }
-    this.threads.clear();
     this.updateStatus('idle');
   }
 
@@ -175,13 +192,15 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd,
     };
 
-    // 사용자 메시지 추가
-    threadInfo.messages.push({
+    // 사용자 메시지 추가 + 저장
+    const userMessage: AgentMessage = {
       id: randomUUID(),
       role: 'user',
       content: message,
       timestamp: now,
-    });
+    };
+    threadInfo.messages.push(userMessage);
+    store.appendMessage(threadId, userMessage);
 
     // 타임아웃 (5분)
     const processTimeout = setTimeout(() => {
@@ -193,6 +212,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     threadInfo.timeout = processTimeout;
     this.threads.set(threadId, threadInfo);
+    this.saveThreadMeta(threadInfo);
     this.updateStatus('running', threadId);
 
     this.emit({
@@ -319,6 +339,8 @@ export class ClaudeAdapter implements AgentAdapter {
             };
 
             threadInfo.messages.push(assistantMessage);
+            store.appendMessage(threadId, assistantMessage);
+            this.saveThreadMeta(threadInfo);
 
             this.emit({
               type: 'message_complete',
@@ -375,6 +397,8 @@ export class ClaudeAdapter implements AgentAdapter {
           timestamp: Date.now(),
         };
         threadInfo.messages.push(assistantMessage);
+        store.appendMessage(threadId, assistantMessage);
+        this.saveThreadMeta(threadInfo);
 
         this.emit({
           type: 'message_complete',
@@ -402,6 +426,22 @@ export class ClaudeAdapter implements AgentAdapter {
         error: `Failed to spawn claude: ${err.message}`,
       });
       this.updateStatus('error');
+    });
+  }
+
+  // 스레드 메타데이터 디스크 저장
+  private saveThreadMeta(thread: ThreadInfo): void {
+    store.saveThread('claude', {
+      id: thread.id,
+      agentType: 'claude',
+      title: thread.title,
+      lastMessage: thread.messages.length > 0
+        ? thread.messages[thread.messages.length - 1].content.slice(0, 100)
+        : undefined,
+      messageCount: thread.messages.length,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      cwd: thread.cwd,
     });
   }
 

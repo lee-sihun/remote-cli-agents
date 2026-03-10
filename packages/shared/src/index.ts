@@ -77,6 +77,7 @@ export type ClientMessage =
   | { type: 'interrupt'; agentType: AgentType; threadId: string }
   | { type: 'approve'; agentType: AgentType; threadId: string; toolCallId: string; approved: boolean }
   | { type: 'list_threads'; agentType: AgentType }
+  | { type: 'get_thread_messages'; agentType: AgentType; threadId: string }
   | { type: 'list_agents' }
   | { type: 'select_agent'; agentType: AgentType; config?: AgentConfig }
   | { type: 'pty_input'; agentType: AgentType; threadId: string; data: string }

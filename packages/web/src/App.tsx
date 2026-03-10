@@ -205,6 +205,15 @@ export default function App() {
     (threadId: string) => {
       storeRef.current.setActiveThread(threadId);
       setSidebarOpen(false);
+
+      // 메시지가 없으면 서버에서 로드
+      const existing = storeRef.current.messages.get(threadId);
+      if (!existing || existing.length === 0) {
+        const agent = storeRef.current.activeAgent;
+        if (agent) {
+          wsRef.current.send({ type: 'get_thread_messages', agentType: agent, threadId });
+        }
+      }
     },
     [],
   );
