@@ -163,20 +163,19 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   // Auto-reconnect from saved connection on mount
   useEffect(() => {
-    // Check URL params first
+    // Check URL params first (QR 스캔 → 리다이렉트)
     const params = new URLSearchParams(window.location.search);
     const qrParam = params.get('qr');
     if (qrParam) {
       const decoded = parseQRPayload(decodeURIComponent(qrParam));
       if (decoded) {
         connect(decoded);
-        // Clean URL
         window.history.replaceState({}, '', window.location.pathname);
         return;
       }
     }
 
-    // Check localStorage
+    // Check localStorage (이전 연결 복원)
     try {
       const saved = localStorage.getItem('rca_last_connection');
       if (saved) {
@@ -193,6 +192,17 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       }
     } catch {
       // ignore
+    }
+
+    // 서버에서 직접 서빙되는 경우 자동 연결
+    // Vite dev 서버(9471)가 아니면 현재 호스트로 WebSocket 연결 시도
+    const { hostname, port, protocol } = window.location;
+    const isDevServer = port === '9471' || port === '5173';
+    if (!isDevServer && hostname) {
+      const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+      const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
+      connectDirect(autoUrl);
+      return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
