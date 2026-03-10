@@ -55,13 +55,15 @@ export default function App() {
 
   const terminalRef = useRef<TerminalViewHandle>(null);
 
-  // Store
+  // Store (ref 패턴으로 안정적인 콜백 유지)
   const store = useAgentStore();
+  const storeRef = useRef(store);
+  storeRef.current = store;
 
-  // WebSocket
+  // WebSocket (ref 패턴으로 콜백이 항상 최신 store 사용)
   const handleMessage = useCallback(
     (msg: ServerMessage) => {
-      store.processServerMessage(msg);
+      storeRef.current.processServerMessage(msg);
 
       // Forward PTY output to terminal
       if (
@@ -71,20 +73,22 @@ export default function App() {
         terminalRef.current?.write(msg.event.data);
       }
     },
-    [store],
+    [],
   );
 
   const handleStatusChange = useCallback(
     (s: 'disconnected' | 'connecting' | 'connected') => {
-      store.setConnectionStatus(s);
+      storeRef.current.setConnectionStatus(s);
     },
-    [store],
+    [],
   );
 
   const ws = useWebSocket({
     onMessage: handleMessage,
     onStatusChange: handleStatusChange,
   });
+  const wsRef = useRef(ws);
+  wsRef.current = ws;
 
   // Request initial data on connect
   useEffect(() => {
@@ -140,35 +144,36 @@ export default function App() {
       (!store.activeAgent || a.agentType === store.activeAgent),
   );
 
-  // Handlers
+  // Handlers (ref 패턴: 의존성 없이 안정적인 참조)
   const handleSendMessage = useCallback(
     (content: string) => {
-      if (!store.activeAgent) return;
-      const threadId = store.activeThread || undefined;
+      const s = storeRef.current;
+      if (!s.activeAgent) return;
+      const threadId = s.activeThread || undefined;
 
-      // Add optimistic user message
       if (threadId) {
-        store.addUserMessage(threadId, content);
+        s.addUserMessage(threadId, content);
       }
 
-      ws.send({
+      wsRef.current.send({
         type: 'send_message',
-        agentType: store.activeAgent,
+        agentType: s.activeAgent,
         threadId,
         content,
       });
     },
-    [store, ws],
+    [],
   );
 
   const handleInterrupt = useCallback(() => {
-    if (!store.activeAgent || !store.activeThread) return;
-    ws.send({
+    const s = storeRef.current;
+    if (!s.activeAgent || !s.activeThread) return;
+    wsRef.current.send({
       type: 'interrupt',
-      agentType: store.activeAgent,
-      threadId: store.activeThread,
+      agentType: s.activeAgent,
+      threadId: s.activeThread,
     });
-  }, [store, ws]);
+  }, []);
 
   const handleApproval = useCallback(
     (
@@ -177,57 +182,58 @@ export default function App() {
       toolCallId: string,
       approved: boolean,
     ) => {
-      ws.send({ type: 'approve', agentType, threadId, toolCallId, approved });
+      wsRef.current.send({ type: 'approve', agentType, threadId, toolCallId, approved });
     },
-    [ws],
+    [],
   );
 
   const handleSelectAgent = useCallback(
     (agent: AgentType) => {
-      store.setActiveAgent(agent);
-      store.setActiveThread(null);
+      storeRef.current.setActiveAgent(agent);
+      storeRef.current.setActiveThread(null);
     },
-    [store],
+    [],
   );
 
   const handleSelectThread = useCallback(
     (threadId: string) => {
-      store.setActiveThread(threadId);
+      storeRef.current.setActiveThread(threadId);
       setSidebarOpen(false);
     },
-    [store],
+    [],
   );
 
   const handleNewChat = useCallback(() => {
-    store.setActiveThread(null);
+    storeRef.current.setActiveThread(null);
     setSidebarOpen(false);
-  }, [store]);
+  }, []);
 
   const handleTerminalInput = useCallback(
     (data: string) => {
-      if (!store.activeAgent || !store.activeThread) return;
-      ws.send({
+      const s = storeRef.current;
+      if (!s.activeAgent || !s.activeThread) return;
+      wsRef.current.send({
         type: 'pty_input',
-        agentType: store.activeAgent,
-        threadId: store.activeThread,
+        agentType: s.activeAgent,
+        threadId: s.activeThread,
         data,
       });
     },
-    [store, ws],
+    [],
   );
 
   const handleTerminalResize = useCallback(
     (cols: number, rows: number) => {
-      ws.send({ type: 'pty_resize', cols, rows });
+      wsRef.current.send({ type: 'pty_resize', cols, rows });
     },
-    [ws],
+    [],
   );
 
   const handleGitSend = useCallback(
     (msg: ClientMessage) => {
-      ws.send(msg);
+      wsRef.current.send(msg);
     },
-    [ws],
+    [],
   );
 
   // Show connect screen if not connected

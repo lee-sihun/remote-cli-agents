@@ -21,16 +21,22 @@ const TerminalView = React.forwardRef<TerminalViewHandle, TerminalViewProps>(
     const termRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
 
+    // Ref 패턴: 콜백이 변경되어도 터미널 재생성 방지
+    const onInputRef = useRef(onInput);
+    onInputRef.current = onInput;
+    const onResizeRef = useRef(onResize);
+    onResizeRef.current = onResize;
+
     const handleResize = useCallback(() => {
       if (fitAddonRef.current && termRef.current) {
         try {
           fitAddonRef.current.fit();
-          onResize(termRef.current.cols, termRef.current.rows);
+          onResizeRef.current(termRef.current.cols, termRef.current.rows);
         } catch {
           // ignore fit errors during setup
         }
       }
-    }, [onResize]);
+    }, []);
 
     useEffect(() => {
       if (!containerRef.current) return;
@@ -86,15 +92,15 @@ const TerminalView = React.forwardRef<TerminalViewHandle, TerminalViewProps>(
       setTimeout(() => {
         try {
           fitAddon.fit();
-          onResize(term.cols, term.rows);
+          onResizeRef.current(term.cols, term.rows);
         } catch {
           // ignore
         }
       }, 50);
 
-      // Listen for data (user input)
+      // Listen for data (user input) - ref 사용으로 최신 핸들러 참조
       const dataDisposable = term.onData((data) => {
-        onInput(data);
+        onInputRef.current(data);
       });
 
       termRef.current = term;
@@ -113,7 +119,7 @@ const TerminalView = React.forwardRef<TerminalViewHandle, TerminalViewProps>(
         termRef.current = null;
         fitAddonRef.current = null;
       };
-    }, [onInput, onResize, handleResize]);
+    }, [handleResize]); // handleResize는 이제 안정적 (빈 의존성)
 
     // Expose handle
     React.useImperativeHandle(

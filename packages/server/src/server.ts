@@ -515,7 +515,12 @@ async function serveStaticFile(
 
   try {
     const content = await readFile(fullPath);
-    res.writeHead(200, { 'Content-Type': contentType });
+    // SW 파일은 캐시 방지 (항상 최신 버전 제공)
+    const headers: Record<string, string> = { 'Content-Type': contentType };
+    if (filePath === '/sw.js' || filePath === '/registerSW.js') {
+      headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+    }
+    res.writeHead(200, headers);
     res.end(content);
   } catch {
     // SPA 폴백: HTML이 아닌 경로에서 404면 index.html 반환

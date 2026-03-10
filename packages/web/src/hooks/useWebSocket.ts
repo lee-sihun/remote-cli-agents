@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientMessage, ServerMessage, QRPayload } from '../lib/protocol';
 import { parseQRPayload, buildWebSocketUrl } from '../lib/protocol';
 
@@ -220,12 +220,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     };
   }, [cleanup]);
 
-  return {
-    status,
-    payload,
-    connect,
-    connectDirect,
-    disconnect,
-    send,
-  };
+  // 안정적인 반환 객체 (매 렌더링마다 새 객체 생성 방지)
+  return useMemo(
+    () => ({ status, payload, connect, connectDirect, disconnect, send }),
+    [status, payload, connect, connectDirect, disconnect, send],
+  );
 }
