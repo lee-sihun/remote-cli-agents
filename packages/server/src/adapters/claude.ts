@@ -139,9 +139,13 @@ export class ClaudeAdapter implements AgentAdapter {
       args.push('--dangerously-skip-permissions');
     }
 
+    // CLAUDECODE 환경변수 제거 (중첩 실행 방지 우회)
+    const env = { ...process.env, ...this.config?.env };
+    delete env.CLAUDECODE;
+
     const proc = spawn('claude', args, {
       cwd: cwd || this.config?.cwd || process.cwd(),
-      env: { ...process.env, ...this.config?.env },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
     });
@@ -192,8 +196,11 @@ export class ClaudeAdapter implements AgentAdapter {
         try {
           event = JSON.parse(trimmed);
         } catch {
-          return; // JSON 파싱 실패한 줄은 무시
+          console.log('[claude stdout] (non-JSON)', trimmed.slice(0, 200));
+          return;
         }
+
+        console.log('[claude event]', event.type, event.subtype || '');
 
         threadInfo.updatedAt = Date.now();
 
@@ -281,20 +288,17 @@ export class ClaudeAdapter implements AgentAdapter {
       });
     }
 
-    // stderr 에러 처리
+    // stderr 에러 처리 (실시간 출력)
     if (proc.stderr) {
-      let stderrData = '';
       proc.stderr.on('data', (chunk: Buffer) => {
-        stderrData += chunk.toString();
-      });
-
-      proc.stderr.on('end', () => {
-        if (stderrData.trim()) {
+        const text = chunk.toString().trim();
+        if (text) {
+          console.error('[claude stderr]', text);
           this.emit({
             type: 'error',
             threadId,
             agentType: 'claude',
-            error: stderrData.trim(),
+            error: text,
           });
         }
       });
