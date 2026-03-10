@@ -131,6 +131,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const args = [
       '-p', message,
       '--output-format', 'stream-json',
+      '--verbose',
     ];
 
     if (sessionId) {
