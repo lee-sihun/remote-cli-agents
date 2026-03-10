@@ -7,6 +7,7 @@ export interface AgentInfo {
   name: string;
   available: boolean;
   description: string;
+  options?: AgentOptionDef[];
 }
 
 export interface AgentConfig {
@@ -15,8 +16,93 @@ export interface AgentConfig {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
-  permissionMode?: 'plan' | 'suggest' | 'full';
+  permissionMode?: string;
+  model?: string;
 }
+
+// ─── 에이전트별 설정 옵션 정의 ───
+
+export interface AgentOptionDef {
+  key: string;
+  label: string;
+  type: 'select' | 'text';
+  options?: { value: string; label: string }[];
+  defaultValue?: string;
+  description?: string;
+}
+
+export const CLAUDE_OPTIONS: AgentOptionDef[] = [
+  {
+    key: 'model',
+    label: 'Model',
+    type: 'select',
+    options: [
+      { value: 'sonnet', label: 'Sonnet' },
+      { value: 'opus', label: 'Opus' },
+      { value: 'haiku', label: 'Haiku' },
+      { value: 'opusplan', label: 'OpusPlan' },
+    ],
+    defaultValue: 'sonnet',
+  },
+  {
+    key: 'effortLevel',
+    label: 'Reasoning',
+    type: 'select',
+    options: [
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+    ],
+    defaultValue: 'medium',
+  },
+  {
+    key: 'permissionMode',
+    label: 'Mode',
+    type: 'select',
+    options: [
+      { value: 'default', label: 'Default' },
+      { value: 'acceptEdits', label: 'Auto Edit' },
+      { value: 'plan', label: 'Plan' },
+      { value: 'bypassPermissions', label: 'Bypass' },
+    ],
+    defaultValue: 'default',
+  },
+];
+
+export const CODEX_OPTIONS: AgentOptionDef[] = [
+  {
+    key: 'model',
+    label: 'Model',
+    type: 'select',
+    options: [
+      { value: '', label: 'Default' },
+      { value: 'codex-mini-latest', label: 'Codex Mini' },
+      { value: 'gpt-4.1', label: 'GPT-4.1' },
+      { value: 'o4-mini', label: 'o4-mini' },
+      { value: 'o3', label: 'o3' },
+      { value: 'o3-mini', label: 'o3-mini' },
+    ],
+    defaultValue: '',
+  },
+  {
+    key: 'approvalMode',
+    label: 'Mode',
+    type: 'select',
+    options: [
+      { value: 'on-request', label: 'On Request' },
+      { value: 'full-auto', label: 'Full Auto' },
+      { value: 'never', label: 'Bypass' },
+    ],
+    defaultValue: 'on-request',
+  },
+];
+
+export const AGENT_OPTIONS: Record<AgentType, AgentOptionDef[]> = {
+  claude: CLAUDE_OPTIONS,
+  codex: CODEX_OPTIONS,
+  gemini: [],
+  pty: [],
+};
 
 // ─── Message Types ───
 

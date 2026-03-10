@@ -6,6 +6,7 @@ export type {
   AgentType,
   AgentInfo,
   AgentConfig,
+  AgentOptionDef,
   AgentMessage,
   ToolCall,
   ThreadSummary,

@@ -51,7 +51,7 @@ export default function MessageInput({
   );
 
   return (
-    <div className="border-t border-[var(--border)] bg-[var(--bg-primary)] p-3 sm:p-4">
+    <div className="p-3 sm:p-4">
       <div className="flex items-end gap-2 max-w-4xl mx-auto">
         <div className="flex-1 relative">
           <textarea

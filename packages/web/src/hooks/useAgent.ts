@@ -38,10 +38,14 @@ interface AgentState {
   // Git
   gitResults: Map<string, unknown>;
 
+  // 에이전트 설정
+  agentSettings: Map<AgentType, Record<string, string>>;
+
   // Actions
   setConnectionStatus: (status: 'disconnected' | 'connecting' | 'connected') => void;
   setActiveAgent: (agent: AgentType | null) => void;
   setActiveThread: (threadId: string | null) => void;
+  setAgentSettings: (agent: AgentType, settings: Record<string, string>) => void;
   processServerMessage: (msg: ServerMessage) => void;
   addUserMessage: (threadId: string, content: string) => void;
   clearMessages: (threadId: string) => void;
@@ -73,11 +77,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   gitResults: new Map(),
 
+  agentSettings: new Map(),
+
   setConnectionStatus: (status) => set({ connectionStatus: status }),
 
   setActiveAgent: (agent) => set({ activeAgent: agent }),
 
   setActiveThread: (threadId) => set({ activeThread: threadId }),
+
+  setAgentSettings: (agent, settings) => {
+    const map = new Map(get().agentSettings);
+    map.set(agent, settings);
+    set({ agentSettings: map });
+  },
 
   addUserMessage: (threadId, content) => {
     const msgs = new Map(get().messages);

@@ -165,7 +165,24 @@ export class CodexAdapter implements AgentAdapter {
 
   // app-server 프로세스 생성
   private async spawnAppServer(): Promise<void> {
-    const proc = spawn('codex', ['app-server'], {
+    const args = ['app-server'];
+
+    // 모델 설정
+    if (this.config?.model) {
+      args.push('--model', this.config.model);
+    }
+
+    // 승인 모드 설정
+    const approvalMode = (this.config as unknown as Record<string, unknown>)?.approvalMode as string | undefined;
+    if (approvalMode === 'full-auto') {
+      args.push('--full-auto');
+    } else if (approvalMode === 'never') {
+      args.push('--ask-for-approval', 'never');
+    } else if (approvalMode) {
+      args.push('--ask-for-approval', approvalMode);
+    }
+
+    const proc = spawn('codex', args, {
       cwd: this.config?.cwd || process.cwd(),
       env: { ...process.env, ...this.config?.env },
       stdio: ['pipe', 'pipe', 'pipe'],

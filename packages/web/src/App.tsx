@@ -13,6 +13,7 @@ import {
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './hooks/useAgent';
 import type { AgentType, ClientMessage, ServerMessage } from './lib/protocol';
+import AgentSettings from './components/AgentSettings';
 import ConnectScreen from './components/ConnectScreen';
 import ChatView from './components/ChatView';
 import TerminalView from './components/TerminalView';
@@ -147,6 +148,13 @@ export default function App() {
       (!store.activeAgent || a.agentType === store.activeAgent),
   );
 
+  // 현재 에이전트 설정 옵션
+  const currentAgentInfo = store.agents.find((a) => a.type === store.activeAgent);
+  const currentAgentOptions = currentAgentInfo?.options || [];
+  const currentAgentSettings = store.activeAgent
+    ? store.agentSettings.get(store.activeAgent) || {}
+    : {};
+
   // Handlers (ref 패턴: 의존성 없이 안정적인 참조)
   const handleSendMessage = useCallback(
     (content: string) => {
@@ -247,6 +255,30 @@ export default function App() {
   const handleGitSend = useCallback(
     (msg: ClientMessage) => {
       wsRef.current.send(msg);
+    },
+    [],
+  );
+
+  const handleAgentSettingChange = useCallback(
+    (key: string, value: string) => {
+      const s = storeRef.current;
+      if (!s.activeAgent) return;
+
+      const prev = s.agentSettings.get(s.activeAgent) || {};
+      const updated = { ...prev, [key]: value };
+      s.setAgentSettings(s.activeAgent, updated);
+
+      // 서버에 설정 전달
+      wsRef.current.send({
+        type: 'select_agent',
+        agentType: s.activeAgent,
+        config: {
+          type: s.activeAgent,
+          model: updated.model || undefined,
+          permissionMode: updated.permissionMode || updated.approvalMode || undefined,
+          ...updated,
+        },
+      });
     },
     [],
   );
@@ -451,14 +483,26 @@ export default function App() {
             onApprove={handleApproval}
           />
 
-          {/* Input */}
+          {/* Input + settings */}
           {viewMode === 'chat' && (
-            <MessageInput
-              onSend={handleSendMessage}
-              onInterrupt={handleInterrupt}
-              isRunning={isRunning}
-              disabled={!store.activeAgent || ws.status !== 'connected'}
-            />
+            <div className="border-t border-[var(--border)] bg-[var(--bg-primary)]">
+              {/* 에이전트 설정 드롭다운 */}
+              {currentAgentOptions.length > 0 && (
+                <div className="px-3 sm:px-4 pt-2 max-w-4xl mx-auto">
+                  <AgentSettings
+                    options={currentAgentOptions}
+                    values={currentAgentSettings}
+                    onChange={handleAgentSettingChange}
+                  />
+                </div>
+              )}
+              <MessageInput
+                onSend={handleSendMessage}
+                onInterrupt={handleInterrupt}
+                isRunning={isRunning}
+                disabled={!store.activeAgent || ws.status !== 'connected'}
+              />
+            </div>
           )}
         </div>
       </main>

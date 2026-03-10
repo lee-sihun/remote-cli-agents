@@ -12,6 +12,7 @@ import type {
   ClientMessage,
   ServerMessage,
 } from '@rca/shared';
+import { AGENT_OPTIONS } from '@rca/shared';
 import type { AgentAdapter } from './adapters/types.js';
 import { ClaudeAdapter } from './adapters/claude.js';
 import { CodexAdapter } from './adapters/codex.js';
@@ -280,12 +281,14 @@ async function getAgentsList(
       name: 'Claude Code',
       available: adapters.has('claude'),
       description: 'Anthropic Claude Code - structured JSON streaming',
+      options: AGENT_OPTIONS.claude,
     },
     {
       type: 'codex',
       name: 'Codex',
       available: adapters.has('codex'),
       description: 'OpenAI Codex - JSON-RPC app-server',
+      options: AGENT_OPTIONS.codex,
     },
     {
       type: 'gemini',

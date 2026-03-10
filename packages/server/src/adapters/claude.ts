@@ -150,20 +150,35 @@ export class ClaudeAdapter implements AgentAdapter {
       '--verbose',
     ];
 
+    // 모델 설정
+    if (this.config?.model) {
+      args.push('--model', this.config.model);
+    }
+
     if (sessionId) {
       args.push('--resume', sessionId);
     }
 
-    if (this.config?.permissionMode === 'full') {
+    // 권한 모드 설정
+    const perm = this.config?.permissionMode;
+    if (perm === 'bypassPermissions') {
       args.push('--dangerously-skip-permissions');
+    } else if (perm && perm !== 'default') {
+      args.push('--permission-mode', perm);
     }
 
     // -p 플래그를 마지막에 추가 (프롬프트는 stdin으로 전달)
     args.push('-p');
 
-    // CLAUDECODE 환경변수 제거 (중첩 실행 방지 우회)
+    // 환경변수 설정
     const env = { ...process.env, ...this.config?.env };
-    delete env.CLAUDECODE;
+    delete env.CLAUDECODE; // 중첩 실행 방지 우회
+
+    // 추론 단계 (effort level)
+    const effortLevel = (this.config as unknown as Record<string, unknown>)?.effortLevel as string | undefined;
+    if (effortLevel) {
+      env.CLAUDE_CODE_EFFORT_LEVEL = effortLevel;
+    }
 
     const proc = spawn('claude', args, {
       cwd: cwd || this.config?.cwd || process.cwd(),
