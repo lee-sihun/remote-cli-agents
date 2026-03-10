@@ -213,12 +213,29 @@ export class ClaudeAdapter implements AgentAdapter {
           return;
         }
 
-        console.log('[claude event]', event.type, event.subtype || '');
+        console.log('[claude event]', event.type, event.subtype || '', JSON.stringify(event).slice(0, 300));
 
         threadInfo.updatedAt = Date.now();
 
         switch (event.type) {
           case 'assistant': {
+            // stream-json 형식: message.content 배열에서 텍스트 추출
+            const msg = event.message as { content?: Array<{ type: string; text?: string; thinking?: string }> } | undefined;
+            if (msg?.content) {
+              for (const block of msg.content) {
+                if (block.type === 'text' && block.text) {
+                  accumulatedText += block.text;
+                  this.emit({
+                    type: 'message_delta',
+                    threadId,
+                    agentType: 'claude',
+                    content: block.text,
+                  });
+                }
+              }
+            }
+
+            // 기존 형식 호환
             if (event.subtype === 'text' && event.text) {
               accumulatedText += event.text;
               this.emit({
