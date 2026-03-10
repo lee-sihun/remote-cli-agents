@@ -1,53 +1,53 @@
 @import "tailwindcss";
 
-/* ─── Theme Variables ─── */
+/* ─── Theme Variables (Neutral Gray) ─── */
 :root {
-  --bg-primary: #0f172a;
-  --bg-secondary: #1e293b;
-  --bg-tertiary: #334155;
-  --bg-hover: #475569;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --accent: #38bdf8;
-  --accent-hover: #7dd3fc;
+  --bg-primary: #161616;
+  --bg-secondary: #1c1c1c;
+  --bg-tertiary: #2a2a2a;
+  --bg-hover: #363636;
+  --text-primary: #ececec;
+  --text-secondary: #a0a0a0;
+  --text-muted: #6b6b6b;
+  --accent: #a78bfa;
+  --accent-hover: #c4b5fd;
   --success: #4ade80;
   --warning: #fbbf24;
   --error: #f87171;
-  --border: #334155;
-  --user-bubble: #1d4ed8;
+  --border: rgba(255, 255, 255, 0.08);
+  --user-bubble: #7c3aed;
   --user-bubble-text: #ffffff;
-  --assistant-bubble: #1e293b;
-  --assistant-bubble-text: #f1f5f9;
-  --input-bg: #1e293b;
-  --input-border: #475569;
-  --scrollbar-thumb: #475569;
-  --scrollbar-track: #1e293b;
+  --assistant-bubble: #1c1c1c;
+  --assistant-bubble-text: #ececec;
+  --input-bg: #1c1c1c;
+  --input-border: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb: #363636;
+  --scrollbar-track: #1c1c1c;
   color-scheme: dark;
 }
 
 .light {
   --bg-primary: #ffffff;
-  --bg-secondary: #f8fafc;
-  --bg-tertiary: #e2e8f0;
-  --bg-hover: #cbd5e1;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
-  --accent: #0284c7;
-  --accent-hover: #0369a1;
+  --bg-secondary: #f7f7f7;
+  --bg-tertiary: #ebebeb;
+  --bg-hover: #dedede;
+  --text-primary: #1a1a1a;
+  --text-secondary: #525252;
+  --text-muted: #a3a3a3;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
   --success: #16a34a;
   --warning: #d97706;
   --error: #dc2626;
-  --border: #e2e8f0;
-  --user-bubble: #2563eb;
+  --border: rgba(0, 0, 0, 0.08);
+  --user-bubble: #7c3aed;
   --user-bubble-text: #ffffff;
-  --assistant-bubble: #f1f5f9;
-  --assistant-bubble-text: #0f172a;
+  --assistant-bubble: #f7f7f7;
+  --assistant-bubble-text: #1a1a1a;
   --input-bg: #ffffff;
-  --input-border: #cbd5e1;
-  --scrollbar-thumb: #cbd5e1;
-  --scrollbar-track: #f1f5f9;
+  --input-border: rgba(0, 0, 0, 0.12);
+  --scrollbar-thumb: #dedede;
+  --scrollbar-track: #f7f7f7;
   color-scheme: light;
 }
 

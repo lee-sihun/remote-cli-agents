@@ -63,9 +63,9 @@ export default function CodeBlock({ language, children }: CodeBlockProps) {
   const showDiff = effectiveLang === 'diff' || (!language && isDiff(code));
 
   return (
-    <div className="relative group rounded-lg overflow-hidden bg-[#282c34] my-2">
+    <div className="relative group rounded-lg overflow-hidden bg-[#1a1a1a] my-2">
       {/* Header bar */}
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#21252b] text-xs text-[var(--text-muted)]">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-[#141414] text-xs text-[var(--text-muted)]">
         <span>{effectiveLang || 'text'}</span>
         <button
           onClick={handleCopy}

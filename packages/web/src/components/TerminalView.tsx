@@ -46,21 +46,21 @@ const TerminalView = React.forwardRef<TerminalViewHandle, TerminalViewProps>(
         fontSize: 14,
         fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace",
         theme: {
-          background: '#0f172a',
-          foreground: '#e2e8f0',
-          cursor: '#38bdf8',
-          cursorAccent: '#0f172a',
-          selectionBackground: '#334155',
-          selectionForeground: '#f1f5f9',
-          black: '#1e293b',
+          background: '#161616',
+          foreground: '#ececec',
+          cursor: '#a78bfa',
+          cursorAccent: '#161616',
+          selectionBackground: '#363636',
+          selectionForeground: '#ececec',
+          black: '#1c1c1c',
           red: '#f87171',
           green: '#4ade80',
           yellow: '#fbbf24',
           blue: '#60a5fa',
           magenta: '#c084fc',
           cyan: '#22d3ee',
-          white: '#f1f5f9',
-          brightBlack: '#475569',
+          white: '#ececec',
+          brightBlack: '#6b6b6b',
           brightRed: '#fca5a5',
           brightGreen: '#86efac',
           brightYellow: '#fde68a',
@@ -139,7 +139,7 @@ const TerminalView = React.forwardRef<TerminalViewHandle, TerminalViewProps>(
     );
 
     return (
-      <div className="terminal-container flex-1 h-full bg-[#0f172a] rounded-lg overflow-hidden">
+      <div className="terminal-container flex-1 h-full bg-[#161616] rounded-lg overflow-hidden">
         <div ref={containerRef} className="h-full w-full" />
       </div>
     );
