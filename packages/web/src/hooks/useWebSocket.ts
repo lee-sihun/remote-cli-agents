@@ -23,6 +23,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const reconnectDelay = useRef(RECONNECT_MIN);
   const messageBuffer = useRef<ClientMessage[]>([]);
   const intentionalClose = useRef(false);
+  const hasEverConnected = useRef(false); // 한번이라도 연결 성공했는지
 
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -58,6 +59,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      hasEverConnected.current = true;
       updateStatus('connected');
       reconnectDelay.current = RECONNECT_MIN;
 
@@ -87,9 +89,10 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
     ws.onclose = () => {
       cleanup();
-      if (!intentionalClose.current) {
-        updateStatus('disconnected');
-        // Auto-reconnect with exponential backoff
+      updateStatus('disconnected');
+
+      // 자동 재연결: 한번이라도 성공했던 연결만 재시도
+      if (!intentionalClose.current && hasEverConnected.current) {
         reconnectTimer.current = setTimeout(() => {
           reconnectDelay.current = Math.min(
             reconnectDelay.current * 1.5,
@@ -97,8 +100,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           );
           connectToUrl(wsUrl);
         }, reconnectDelay.current);
-      } else {
-        updateStatus('disconnected');
       }
     };
 
@@ -139,6 +140,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const disconnect = useCallback(() => {
     cleanup();
     intentionalClose.current = true;
+    hasEverConnected.current = false;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
