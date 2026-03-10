@@ -143,6 +143,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: cwd || this.config?.cwd || process.cwd(),
       env: { ...process.env, ...this.config?.env },
       stdio: ['pipe', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
     });
 
     const now = Date.now();
