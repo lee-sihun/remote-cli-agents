@@ -38,6 +38,7 @@ interface ThreadInfo {
   createdAt: number;
   updatedAt: number;
   cwd?: string;
+  timeout?: ReturnType<typeof setTimeout>;
 }
 
 export class ClaudeAdapter implements AgentAdapter {
@@ -59,6 +60,7 @@ export class ClaudeAdapter implements AgentAdapter {
   async stop(): Promise<void> {
     // 모든 활성 프로세스 종료
     for (const [, thread] of this.threads) {
+      if (thread.timeout) clearTimeout(thread.timeout);
       if (thread.process && !thread.process.killed) {
         thread.process.kill('SIGTERM');
       }
@@ -146,7 +148,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const proc = spawn('claude', args, {
       cwd: cwd || this.config?.cwd || process.cwd(),
       env,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
     });
 
@@ -172,6 +174,15 @@ export class ClaudeAdapter implements AgentAdapter {
       timestamp: now,
     });
 
+    // 타임아웃 (5분)
+    const processTimeout = setTimeout(() => {
+      if (!proc.killed) {
+        console.error(`[claude] Process timeout (5min) for thread ${threadId}`);
+        proc.kill('SIGTERM');
+      }
+    }, 5 * 60 * 1000);
+
+    threadInfo.timeout = processTimeout;
     this.threads.set(threadId, threadInfo);
     this.updateStatus('running', threadId);
 
@@ -184,6 +195,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // stdout에서 JSON 이벤트 파싱
     let accumulatedText = '';
     let currentToolCall: ToolCall | null = null;
+    let messageCompleted = false;
 
     if (proc.stdout) {
       const rl = createInterface({ input: proc.stdout });
@@ -262,6 +274,7 @@ export class ClaudeAdapter implements AgentAdapter {
             }
 
             // 최종 메시지 생성
+            messageCompleted = true;
             const assistantMessage: AgentMessage = {
               id: randomUUID(),
               role: 'assistant',
@@ -306,12 +319,32 @@ export class ClaudeAdapter implements AgentAdapter {
 
     // 프로세스 종료 처리
     proc.on('close', (code) => {
+      clearTimeout(processTimeout);
+
       if (code !== 0 && code !== null) {
         this.emit({
           type: 'error',
           threadId,
           agentType: 'claude',
           error: `Claude process exited with code ${code}`,
+        });
+      }
+
+      // result 이벤트 없이 종료된 경우 message_complete 보장
+      if (!messageCompleted) {
+        const assistantMessage: AgentMessage = {
+          id: randomUUID(),
+          role: 'assistant',
+          content: accumulatedText || (code !== 0 ? `[프로세스 종료: code ${code}]` : '[응답 없음]'),
+          timestamp: Date.now(),
+        };
+        threadInfo.messages.push(assistantMessage);
+
+        this.emit({
+          type: 'message_complete',
+          threadId,
+          agentType: 'claude',
+          message: assistantMessage,
         });
       }
 

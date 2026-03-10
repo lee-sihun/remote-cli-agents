@@ -149,11 +149,14 @@ export default function App() {
     (content: string) => {
       const s = storeRef.current;
       if (!s.activeAgent) return;
-      const threadId = s.activeThread || undefined;
 
-      if (threadId) {
-        s.addUserMessage(threadId, content);
+      // 새 대화: threadId를 클라이언트에서 생성
+      const threadId = s.activeThread || crypto.randomUUID();
+      if (!s.activeThread) {
+        s.setActiveThread(threadId);
       }
+
+      s.addUserMessage(threadId, content);
 
       wsRef.current.send({
         type: 'send_message',
