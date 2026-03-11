@@ -288,13 +288,14 @@ export default function App() {
     return (
       <ConnectScreen
         status={ws.status}
+        onReconnect={ws.reconnect}
         onConnectDirect={ws.connectDirect}
       />
     );
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--bg-primary)]">
+    <div className="flex h-screen overflow-hidden bg-(--bg-primary)">
       {/* Sidebar overlay (mobile) */}
       {sidebarOpen && (
         <div
@@ -305,23 +306,23 @@ export default function App() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-40 w-72 bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col transform transition-transform md:transform-none ${
+        className={`fixed md:static inset-y-0 left-0 z-40 w-72 bg-(--bg-secondary) border-r border-(--border) flex flex-col transform transition-transform md:transform-none ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
         } sidebar-panel`}
       >
         {/* Sidebar header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-(--border)">
           <h1 className="font-bold text-sm">RCA</h1>
           <button
             onClick={() => setSidebarOpen(false)}
-            className="p-1 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors md:hidden"
+            className="p-1 rounded-lg hover:bg-(--bg-tertiary) transition-colors md:hidden"
           >
             <X size={18} />
           </button>
         </div>
 
         {/* Agent selector */}
-        <div className="p-3 border-b border-[var(--border)]">
+        <div className="p-3 border-b border-(--border)">
           <AgentSelector
             agents={store.agents}
             statuses={store.agentStatuses}
@@ -342,7 +343,7 @@ export default function App() {
         </div>
 
         {/* Sidebar footer */}
-        <div className="p-3 border-t border-[var(--border)]">
+        <div className="p-3 border-t border-(--border)">
           <StatusBar
             status={ws.status}
             payload={ws.payload}
@@ -354,23 +355,23 @@ export default function App() {
       {/* Main content */}
       <main className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-primary)]">
+        <header className="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-(--border) bg-(--bg-primary)">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setSidebarOpen(true)}
-              className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors md:hidden"
+              className="p-2 rounded-lg hover:bg-(--bg-tertiary) transition-colors md:hidden"
             >
               <Menu size={18} />
             </button>
             <div className="hidden sm:flex items-center gap-2">
               {store.activeAgent && (
-                <span className="text-sm font-medium text-[var(--text-secondary)]">
+                <span className="text-sm font-medium text-(--text-secondary)">
                   {store.agents.find((a) => a.type === store.activeAgent)
                     ?.name || store.activeAgent}
                 </span>
               )}
               {agentStatus?.model && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-muted)]">
+                <span className="text-xs px-2 py-0.5 rounded-full bg-(--bg-tertiary) text-(--text-muted)">
                   {agentStatus.model}
                 </span>
               )}
@@ -380,13 +381,13 @@ export default function App() {
           <div className="flex items-center gap-1">
             {/* View mode toggle (for PTY-capable agents) */}
             {isPtyAgent && (
-              <div className="flex items-center bg-[var(--bg-secondary)] rounded-lg p-0.5 mr-2">
+              <div className="flex items-center bg-(--bg-secondary) rounded-lg p-0.5 mr-2">
                 <button
                   onClick={() => setViewMode('chat')}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
                     viewMode === 'chat'
-                      ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
-                      : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                      ? 'bg-(--bg-tertiary) text-(--text-primary)'
+                      : 'text-(--text-muted) hover:text-(--text-secondary)'
                   }`}
                 >
                   <MessageSquare size={12} />
@@ -396,8 +397,8 @@ export default function App() {
                   onClick={() => setViewMode('terminal')}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
                     viewMode === 'terminal'
-                      ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]'
-                      : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                      ? 'bg-(--bg-tertiary) text-(--text-primary)'
+                      : 'text-(--text-muted) hover:text-(--text-secondary)'
                   }`}
                 >
                   <Terminal size={12} />
@@ -414,8 +415,8 @@ export default function App() {
               }}
               className={`p-2 rounded-lg transition-colors ${
                 gitPanelOpen
-                  ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-                  : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+                  ? 'bg-(--accent)/10 text-(--accent)'
+                  : 'hover:bg-(--bg-tertiary) text-(--text-muted)'
               }`}
               title="Git panel"
             >
@@ -430,8 +431,8 @@ export default function App() {
               }}
               className={`p-2 rounded-lg transition-colors ${
                 filePanelOpen
-                  ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-                  : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+                  ? 'bg-(--accent)/10 text-(--accent)'
+                  : 'hover:bg-(--bg-tertiary) text-(--text-muted)'
               }`}
               title="File explorer"
             >
@@ -441,7 +442,7 @@ export default function App() {
             {/* Theme toggle */}
             <button
               onClick={theme.toggle}
-              className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-muted)]"
+              className="p-2 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-(--text-muted)"
               title={theme.dark ? 'Switch to light mode' : 'Switch to dark mode'}
             >
               {theme.dark ? <Sun size={16} /> : <Moon size={16} />}
@@ -450,7 +451,7 @@ export default function App() {
             {/* Disconnect */}
             <button
               onClick={ws.disconnect}
-              className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-muted)]"
+              className="p-2 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-(--text-muted)"
               title="Disconnect"
             >
               <LogOut size={16} />
@@ -484,7 +485,7 @@ export default function App() {
 
           {/* Input + settings */}
           {viewMode === 'chat' && (
-            <div className="border-t border-[var(--border)] bg-[var(--bg-primary)]">
+            <div className="border-t border-(--border) bg-(--bg-primary)">
               {/* 에이전트 설정 드롭다운 */}
               {currentAgentOptions.length > 0 && (
                 <div className="px-3 sm:px-4 pt-2 max-w-4xl mx-auto">

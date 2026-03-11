@@ -163,13 +163,55 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
     updateStatus('disconnected');
     setPayload(null);
+    // localStorage 유지 → 재연결 시 활용
+  }, [cleanup, updateStatus]);
+
+  // /api/connection에서 세션 정보 가져와 연결
+  const connectFromApi = useCallback(() => {
+    const { hostname, port, protocol } = window.location;
+    const origin = `${protocol}//${hostname}${port ? ':' + port : ''}`;
+    fetch(`${origin}/api/connection`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        const parsed = parseQRPayload(JSON.stringify(data));
+        if (parsed) {
+          connect(parsed);
+        } else {
+          const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+          const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
+          connectDirect(autoUrl);
+        }
+      })
+      .catch(() => {
+        const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+        const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
+        connectDirect(autoUrl);
+      });
+  }, [connect, connectDirect]);
+
+  // 재연결 (disconnect 후 다시 연결)
+  const reconnect = useCallback(() => {
+    // localStorage에 저장된 연결 먼저 시도
     try {
-      localStorage.removeItem('rca_last_connection');
-      localStorage.removeItem('rca_last_direct_url');
+      const saved = localStorage.getItem('rca_last_connection');
+      if (saved) {
+        const parsed = parseQRPayload(saved);
+        if (parsed) {
+          connect(parsed);
+          return;
+        }
+      }
+      const directUrl = localStorage.getItem('rca_last_direct_url');
+      if (directUrl) {
+        connectDirect(directUrl);
+        return;
+      }
     } catch {
       // ignore
     }
-  }, [cleanup, updateStatus]);
+    // 저장 정보 없으면 /api/connection 시도
+    connectFromApi();
+  }, [connect, connectDirect, connectFromApi]);
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -213,30 +255,10 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
 
     // 서버에서 직접 서빙되는 경우 자동 연결
-    // /api/connection에서 세션 정보를 가져와 토큰 포함 연결
-    const { hostname, port, protocol } = window.location;
+    const { port } = window.location;
     const isDevServer = port === '9471' || port === '5173';
-    if (!isDevServer && hostname) {
-      const origin = `${protocol}//${hostname}${port ? ':' + port : ''}`;
-      fetch(`${origin}/api/connection`)
-        .then((res) => res.ok ? res.json() : null)
-        .then((data) => {
-          const parsed = parseQRPayload(JSON.stringify(data));
-          if (parsed) {
-            connect(parsed);
-          } else {
-            // payload 없으면 토큰 없이 직접 연결
-            const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-            const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
-            connectDirect(autoUrl);
-          }
-        })
-        .catch(() => {
-          // fetch 실패 → 토큰 없이 직접 연결
-          const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-          const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
-          connectDirect(autoUrl);
-        });
+    if (!isDevServer && window.location.hostname) {
+      connectFromApi();
       return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -255,7 +277,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   // 안정적인 반환 객체 (매 렌더링마다 새 객체 생성 방지)
   return useMemo(
-    () => ({ status, payload, connect, connectDirect, disconnect, send }),
-    [status, payload, connect, connectDirect, disconnect, send],
+    () => ({ status, payload, connect, connectDirect, disconnect, reconnect, send }),
+    [status, payload, connect, connectDirect, disconnect, reconnect, send],
   );
 }
