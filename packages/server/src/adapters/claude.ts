@@ -34,6 +34,9 @@ interface ClaudeStreamEvent {
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
   };
+  modelUsage?: Record<string, {
+    contextWindow?: number;
+  }>;
   [key: string]: unknown;
 }
 
@@ -446,7 +449,7 @@ export class ClaudeAdapter implements AgentAdapter {
               const totalTokens = inputTokens + outputTokens;
               resultMeta.usage = { inputTokens, outputTokens };
 
-              const contextWindow = this.estimateContextWindow([
+              const contextWindow = this.extractContextWindow(event) ?? this.estimateContextWindow([
                 this.config?.model,
                 event.model,
                 this.status.model,
@@ -632,6 +635,18 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     return 200_000;
+  }
+
+  private extractContextWindow(event: ClaudeStreamEvent): number | undefined {
+    if (!event.modelUsage) return undefined;
+
+    for (const usage of Object.values(event.modelUsage)) {
+      if (typeof usage.contextWindow === 'number' && usage.contextWindow > 0) {
+        return usage.contextWindow;
+      }
+    }
+
+    return undefined;
   }
 
   private updateStatus(state: AgentStatus['state'], activeThread?: string): void {

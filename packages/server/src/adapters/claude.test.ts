@@ -217,6 +217,11 @@ describe('ClaudeAdapter', () => {
         cache_read_input_tokens: 50,
         output_tokens: 25,
       },
+      modelUsage: {
+        'claude-sonnet': {
+          contextWindow: 1_000_000,
+        },
+      },
     })}\n`);
     await flushStreamEvents();
 
