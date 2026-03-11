@@ -2,16 +2,15 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AGENT_OPTIONS } from '@rca/shared';
 import {
   Menu,
-  X,
   Sun,
   Moon,
   GitBranch,
   FolderOpen,
   Terminal,
   MessageSquare,
-  LogOut,
   Loader2,
   Square,
+  PanelLeftClose,
 } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './hooks/useAgent';
@@ -126,10 +125,18 @@ function sameSettings(a: Record<string, string>, b: Record<string, string>): boo
 
 export default function App() {
   const theme = useTheme();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return window.matchMedia('(min-width: 1000px)').matches;
+    } catch {
+      return false;
+    }
+  });
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
+  const [connectionModalOpen, setConnectionModalOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'chat' | 'terminal'>('chat');
+  const autoOpenedConnectionModal = useRef(false);
 
   const terminalRef = useRef<TerminalViewHandle>(null);
 
@@ -232,6 +239,19 @@ export default function App() {
     }
   }, [isPtyAgent]);
 
+  useEffect(() => {
+    if (ws.status === 'disconnected' && ws.reconnectState.exhausted) {
+      autoOpenedConnectionModal.current = true;
+      setConnectionModalOpen(true);
+      return;
+    }
+
+    if (ws.status === 'connected' && autoOpenedConnectionModal.current) {
+      autoOpenedConnectionModal.current = false;
+      setConnectionModalOpen(false);
+    }
+  }, [ws.reconnectState.exhausted, ws.status]);
+
   // Get current thread messages
   const currentMessages = store.activeThread
     ? store.messages.get(store.activeThread) || []
@@ -254,7 +274,6 @@ export default function App() {
     ? store.threads.get(store.activeAgent)?.find((t) => t.id === store.activeThread)
     : undefined;
   const activeModel = activeThreadSummary?.model || agentStatus?.model;
-
   // 컨텍스트 사용량: 실행 중 활성 스레드면 agentStatus, 아니면 스레드 저장값
   const contextUsage = agentStatus?.contextUsage || activeThreadSummary?.contextUsage;
 
@@ -275,6 +294,11 @@ export default function App() {
     ? store.lastUsedAgentSettings.get(store.activeAgent)
     : undefined;
   const settingsSourceRef = useRef<string | null>(null);
+  const closeSidebarOnMobile = useCallback(() => {
+    if (window.innerWidth < 1000) {
+      setSidebarOpen(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!store.activeAgent) {
@@ -380,7 +404,7 @@ export default function App() {
   const handleSelectThread = useCallback(
     (threadId: string) => {
       storeRef.current.setActiveThread(threadId);
-      setSidebarOpen(false);
+      closeSidebarOnMobile();
 
       // 전체 스레드 상태 복원 (메시지 + 스트리밍 + 에이전트 상태)
       const agent = storeRef.current.activeAgent;
@@ -388,7 +412,7 @@ export default function App() {
         wsRef.current.send({ type: 'get_thread_state', agentType: agent, threadId });
       }
     },
-    [],
+    [closeSidebarOnMobile],
   );
 
   const handleRenameThread = useCallback(
@@ -422,8 +446,8 @@ export default function App() {
 
   const handleNewChat = useCallback(() => {
     storeRef.current.setActiveThread(null);
-    setSidebarOpen(false);
-  }, []);
+    closeSidebarOnMobile();
+  }, [closeSidebarOnMobile]);
 
   const handleTerminalInput = useCallback(
     (data: string) => {
@@ -478,44 +502,22 @@ export default function App() {
     [],
   );
 
-  // Show connect screen if not connected
-  if (ws.status !== 'connected' && store.connectionStatus !== 'connected') {
-    return (
-      <ConnectScreen
-        status={ws.status}
-        onReconnect={ws.reconnect}
-        onConnectDirect={ws.connectDirect}
-      />
-    );
-  }
-
   return (
     <div className="flex overflow-hidden bg-(--bg-primary)" style={{ height: '100%' }}>
       {/* Sidebar overlay (mobile) */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/40 z-30 md:hidden sidebar-overlay"
+          className="fixed inset-0 bg-black/40 z-30 min-[1000px]:hidden sidebar-overlay"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       {/* Sidebar */}
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-40 w-72 bg-(--bg-secondary) border-r border-(--border) flex flex-col transform transition-transform md:transform-none ${
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        className={`fixed inset-y-0 left-0 z-40 w-72 bg-(--bg-secondary) border-r border-(--border) flex flex-col transform transition-transform ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         } sidebar-panel`}
       >
-        {/* Sidebar header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-(--border)">
-          <h1 className="font-bold text-sm">RCA</h1>
-          <button
-            onClick={() => setSidebarOpen(false)}
-            className="p-1 rounded-lg hover:bg-(--bg-tertiary) transition-colors md:hidden"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
         {/* Agent selector */}
         <div className="p-3 border-b border-(--border)">
           <AgentSelector
@@ -546,25 +548,45 @@ export default function App() {
 
         {/* Sidebar footer */}
         <div className="p-3 border-t border-(--border)">
-          <StatusBar
-            status={ws.status}
-            payload={ws.payload}
-            onSettingsClick={() => ws.disconnect()}
-          />
+          <div className="flex items-center justify-between gap-2">
+            <StatusBar
+              status={ws.status}
+              reconnectState={ws.reconnectState}
+              onSettingsClick={() => {
+                autoOpenedConnectionModal.current = false;
+                setConnectionModalOpen(true);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+              className="p-2 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-(--text-muted)"
+              title="Toggle sidebar"
+              aria-label="Toggle sidebar"
+            >
+              <PanelLeftClose size={16} />
+            </button>
+          </div>
         </div>
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main
+        className={`flex-1 flex flex-col min-w-0 transition-[padding-left] duration-200 ${
+          sidebarOpen ? 'min-[1000px]:pl-72' : 'min-[1000px]:pl-0'
+        }`}
+      >
         {/* Header */}
         <header className="flex items-center justify-between px-3 sm:px-4 py-2 border-b border-(--border) bg-(--bg-primary)">
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="p-2 rounded-lg hover:bg-(--bg-tertiary) transition-colors md:hidden"
-            >
-              <Menu size={18} />
-            </button>
+            {!sidebarOpen && (
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="p-2 rounded-lg hover:bg-(--bg-tertiary) transition-colors"
+              >
+                <Menu size={18} />
+              </button>
+            )}
             <div className="hidden sm:flex items-center gap-2">
               {store.activeAgent && (
                 <span className="text-sm font-medium text-(--text-secondary)">
@@ -649,15 +671,6 @@ export default function App() {
             >
               {theme.dark ? <Sun size={16} /> : <Moon size={16} />}
             </button>
-
-            {/* Disconnect */}
-            <button
-              onClick={ws.disconnect}
-              className="p-2 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-(--text-muted)"
-              title="Disconnect"
-            >
-              <LogOut size={16} />
-            </button>
           </div>
         </header>
 
@@ -720,6 +733,24 @@ export default function App() {
           )}
         </div>
       </main>
+
+      <ConnectScreen
+        open={connectionModalOpen}
+        status={ws.status}
+        reconnectState={ws.reconnectState}
+        onClose={() => {
+          autoOpenedConnectionModal.current = false;
+          setConnectionModalOpen(false);
+        }}
+        onReconnect={() => {
+          autoOpenedConnectionModal.current = false;
+          ws.reconnect();
+        }}
+        onConnectDirect={(url) => {
+          autoOpenedConnectionModal.current = false;
+          ws.connectDirect(url);
+        }}
+      />
 
       {/* Side panels */}
       <GitPanel

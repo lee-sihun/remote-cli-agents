@@ -350,7 +350,7 @@ export default function ChatView({
   }
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-y-auto p-4 sm:p-6">
+    <div ref={containerRef} className="scroll-hover-area flex-1 overflow-y-auto p-4 sm:p-6">
       <div className="max-w-4xl mx-auto">
         {messages.map((msg) => (
           <MessageBubble key={msg.id} message={msg} />

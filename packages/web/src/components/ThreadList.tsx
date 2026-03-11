@@ -123,7 +123,7 @@ export default function ThreadList({
         </label>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="scroll-hover-area flex-1 overflow-y-auto">
         {!hasAnyThreads ? (
           <div className="flex flex-col items-center justify-center h-full p-4 text-center">
             <MessageSquare

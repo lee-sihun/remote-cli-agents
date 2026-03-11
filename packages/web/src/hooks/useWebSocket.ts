@@ -4,6 +4,13 @@ import { parseQRPayload, buildWebSocketUrl } from '../lib/protocol';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 
+export interface ReconnectState {
+  attempt: number;
+  maxAttempts: number;
+  nextDelayMs: number | null;
+  exhausted: boolean;
+}
+
 interface UseWebSocketOptions {
   onMessage?: (msg: ServerMessage) => void;
   onStatusChange?: (status: ConnectionStatus) => void;
@@ -11,20 +18,27 @@ interface UseWebSocketOptions {
 
 const RECONNECT_MIN = 1000;
 const RECONNECT_MAX = 5000;
+const RECONNECT_ATTEMPTS = 5;
 const PING_INTERVAL = 25000;
+const EMPTY_RECONNECT_STATE: ReconnectState = {
+  attempt: 0,
+  maxAttempts: RECONNECT_ATTEMPTS,
+  nextDelayMs: null,
+  exhausted: false,
+};
 
 export function useWebSocket(options: UseWebSocketOptions = {}) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [payload, setPayload] = useState<QRPayload | null>(null);
+  const [reconnectState, setReconnectState] = useState<ReconnectState>(EMPTY_RECONNECT_STATE);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectDelay = useRef(RECONNECT_MIN);
+  const reconnectAttempt = useRef(0);
   const messageBuffer = useRef<ClientMessage[]>([]);
   const intentionalClose = useRef(false);
-  const hasEverConnected = useRef(false); // 한번이라도 연결 성공했는지
-  const connectedAt = useRef(0); // 연결 시작 시각 (안정성 판단용)
 
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -32,6 +46,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const updateStatus = useCallback((s: ConnectionStatus) => {
     setStatus(s);
     optionsRef.current.onStatusChange?.(s);
+  }, []);
+
+  const resetReconnectState = useCallback(() => {
+    reconnectAttempt.current = 0;
+    reconnectDelay.current = RECONNECT_MIN;
+    setReconnectState(EMPTY_RECONNECT_STATE);
   }, []);
 
   const cleanup = useCallback(() => {
@@ -47,10 +67,10 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   const connectToUrl = useCallback((wsUrl: string) => {
     cleanup();
-    if (wsRef.current) {
+    const previousSocket = wsRef.current;
+    if (previousSocket) {
       intentionalClose.current = true;
-      wsRef.current.close();
-      wsRef.current = null;
+      previousSocket.close();
     }
 
     intentionalClose.current = false;
@@ -60,10 +80,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      hasEverConnected.current = true;
-      connectedAt.current = Date.now();
+      if (wsRef.current !== ws) {
+        return;
+      }
       updateStatus('connected');
-      reconnectDelay.current = RECONNECT_MIN;
+      resetReconnectState();
 
       // Flush buffered messages
       const buffered = messageBuffer.current.splice(0);
@@ -80,6 +101,9 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) {
+        return;
+      }
       try {
         const msg = JSON.parse(event.data as string) as ServerMessage;
         if (msg.type === 'pong') return;
@@ -90,43 +114,58 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     };
 
     ws.onclose = () => {
-      cleanup();
-      updateStatus('disconnected');
-
-      // 연결 안정성 판단: 3초 미만 유지 → 불안정 연결
-      const wasStable = connectedAt.current > 0
-        && Date.now() - connectedAt.current > 3000;
-      connectedAt.current = 0;
-
-      if (!intentionalClose.current && hasEverConnected.current && wasStable) {
-        // 안정 연결 끊김 → 자동 재연결
-        reconnectTimer.current = setTimeout(() => {
-          reconnectDelay.current = Math.min(
-            reconnectDelay.current * 1.5,
-            RECONNECT_MAX,
-          );
-          connectToUrl(wsUrl);
-        }, reconnectDelay.current);
-      } else if (!intentionalClose.current && !wasStable) {
-        // 불안정 연결 → 재연결 중단, 저장된 URL 제거
-        hasEverConnected.current = false;
-        try {
-          localStorage.removeItem('rca_last_connection');
-          localStorage.removeItem('rca_last_direct_url');
-        } catch {
-          // ignore
-        }
+      if (wsRef.current !== ws) {
+        return;
       }
+
+      cleanup();
+      wsRef.current = null;
+
+      if (intentionalClose.current) {
+        updateStatus('disconnected');
+        return;
+      }
+
+      const nextAttempt = reconnectAttempt.current + 1;
+      if (nextAttempt > RECONNECT_ATTEMPTS) {
+        setReconnectState({
+          attempt: reconnectAttempt.current,
+          maxAttempts: RECONNECT_ATTEMPTS,
+          nextDelayMs: null,
+          exhausted: true,
+        });
+        updateStatus('disconnected');
+        return;
+      }
+
+      reconnectAttempt.current = nextAttempt;
+      const nextDelay = reconnectDelay.current;
+      setReconnectState({
+        attempt: nextAttempt,
+        maxAttempts: RECONNECT_ATTEMPTS,
+        nextDelayMs: nextDelay,
+        exhausted: false,
+      });
+      updateStatus('connecting');
+
+      reconnectTimer.current = setTimeout(() => {
+        reconnectDelay.current = Math.min(
+          reconnectDelay.current * 1.5,
+          RECONNECT_MAX,
+        );
+        connectToUrl(wsUrl);
+      }, nextDelay);
     };
 
     ws.onerror = () => {
       // onclose will fire after onerror
     };
-  }, [cleanup, updateStatus]);
+  }, [cleanup, resetReconnectState, updateStatus]);
 
   const connect = useCallback(
     (qrPayload: QRPayload) => {
       setPayload(qrPayload);
+      resetReconnectState();
       // Save for auto-reconnect
       try {
         localStorage.setItem('rca_last_connection', JSON.stringify(qrPayload));
@@ -136,13 +175,14 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       const url = buildWebSocketUrl(qrPayload);
       connectToUrl(url);
     },
-    [connectToUrl],
+    [connectToUrl, resetReconnectState],
   );
 
   const connectDirect = useCallback(
     (wsUrl: string) => {
       // For manual URL entry (ws:// or wss://)
       setPayload(null);
+      resetReconnectState();
       try {
         localStorage.setItem('rca_last_direct_url', wsUrl);
       } catch {
@@ -150,13 +190,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       }
       connectToUrl(wsUrl);
     },
-    [connectToUrl],
+    [connectToUrl, resetReconnectState],
   );
 
   const disconnect = useCallback(() => {
     cleanup();
     intentionalClose.current = true;
-    hasEverConnected.current = false;
+    resetReconnectState();
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -164,7 +204,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     updateStatus('disconnected');
     setPayload(null);
     // localStorage 유지 → 재연결 시 활용
-  }, [cleanup, updateStatus]);
+  }, [cleanup, resetReconnectState, updateStatus]);
 
   // /api/connection에서 토큰 가져와 /ws 직접 연결 (same-origin 전용)
   const connectFromApi = useCallback(() => {
@@ -190,14 +230,15 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   // 재연결
   const reconnect = useCallback(() => {
-    // API에서 최신 토큰으로 직접 연결 (Vite proxy 포함)
-    if (window.location.hostname) {
-      connectFromApi();
-      return;
-    }
-
-    // fallback → localStorage 시도
     try {
+      const saved = localStorage.getItem('rca_last_connection');
+      if (saved) {
+        const parsed = parseQRPayload(saved);
+        if (parsed) {
+          connect(parsed);
+          return;
+        }
+      }
       const directUrl = localStorage.getItem('rca_last_direct_url');
       if (directUrl) {
         connectDirect(directUrl);
@@ -206,7 +247,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     } catch {
       // ignore
     }
-  }, [connectDirect, connectFromApi]);
+
+    if (window.location.hostname) {
+      connectFromApi();
+    }
+  }, [connect, connectDirect, connectFromApi]);
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -270,7 +315,16 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   // 안정적인 반환 객체 (매 렌더링마다 새 객체 생성 방지)
   return useMemo(
-    () => ({ status, payload, connect, connectDirect, disconnect, reconnect, send }),
-    [status, payload, connect, connectDirect, disconnect, reconnect, send],
+    () => ({
+      status,
+      payload,
+      reconnectState,
+      connect,
+      connectDirect,
+      disconnect,
+      reconnect,
+      send,
+    }),
+    [status, payload, reconnectState, connect, connectDirect, disconnect, reconnect, send],
   );
 }

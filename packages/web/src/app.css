@@ -113,6 +113,14 @@ body {
   background: var(--bg-hover);
 }
 
+.scroll-hover-area::-webkit-scrollbar-thumb {
+  transition: background-color 0.15s ease;
+}
+
+.scroll-hover-area:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--scrollbar-thumb) 55%, var(--text-primary) 45%);
+}
+
 /* ─── Animations ─── */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(8px); }

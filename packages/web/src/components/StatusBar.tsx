@@ -1,36 +1,36 @@
 import React from 'react';
-import { Wifi, WifiOff, Loader2, Settings } from 'lucide-react';
-import type { ConnectionStatus } from '../hooks/useWebSocket';
-import type { QRPayload } from '../lib/protocol';
+import { Wifi, WifiOff, Loader2 } from 'lucide-react';
+import type { ConnectionStatus, ReconnectState } from '../hooks/useWebSocket';
 
 interface StatusBarProps {
   status: ConnectionStatus;
-  payload: QRPayload | null;
+  reconnectState: ReconnectState;
   onSettingsClick: () => void;
+  className?: string;
 }
 
 export default function StatusBar({
   status,
-  payload,
+  reconnectState,
   onSettingsClick,
+  className = '',
 }: StatusBarProps) {
   const statusConfig = {
     connected: {
-      color: 'bg-(--success)',
-      textColor: 'text-(--success)',
       icon: Wifi,
+      textColor: 'text-(--success)',
       label: 'Connected',
     },
     connecting: {
-      color: 'bg-(--warning)',
-      textColor: 'text-(--warning)',
       icon: Loader2,
-      label: 'Reconnecting...',
+      textColor: 'text-(--warning)',
+      label: reconnectState.attempt > 0
+        ? `Reconnecting... ${reconnectState.attempt}/${reconnectState.maxAttempts}`
+        : 'Reconnecting...',
     },
     disconnected: {
-      color: 'bg-(--error)',
-      textColor: 'text-(--error)',
       icon: WifiOff,
+      textColor: 'text-(--error)',
       label: 'Disconnected',
     },
   };
@@ -41,14 +41,9 @@ export default function StatusBar({
   return (
     <button
       onClick={onSettingsClick}
-      className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-sm"
+      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-sm ${className}`}
       title="Connection settings"
     >
-      <span className="relative flex items-center">
-        <span
-          className={`w-2 h-2 rounded-full ${config.color} ${status === 'connecting' ? 'animate-pulse' : ''}`}
-        />
-      </span>
       <Icon
         size={14}
         className={`${config.textColor} ${status === 'connecting' ? 'animate-spin' : ''}`}
@@ -56,12 +51,6 @@ export default function StatusBar({
       <span className={`${config.textColor} hidden sm:inline`}>
         {config.label}
       </span>
-      {payload?.relay && status === 'connected' && (
-        <span className="text-(--text-muted) text-xs hidden sm:inline">
-          (relay)
-        </span>
-      )}
-      <Settings size={14} className="text-(--text-muted)" />
     </button>
   );
 }

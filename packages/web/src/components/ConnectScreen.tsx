@@ -1,17 +1,49 @@
-import { useCallback, useState } from 'react';
-import { Wifi, RefreshCw } from 'lucide-react';
-import type { ConnectionStatus } from '../hooks/useWebSocket';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2, RefreshCw, Wifi, WifiOff, X } from 'lucide-react';
+import type { ConnectionStatus, ReconnectState } from '../hooks/useWebSocket';
 
 interface ConnectScreenProps {
+  open: boolean;
   status: ConnectionStatus;
+  reconnectState: ReconnectState;
+  onClose: () => void;
   onReconnect: () => void;
   onConnectDirect: (url: string) => void;
 }
 
-const ConnectScreen = ({ status, onReconnect, onConnectDirect }: ConnectScreenProps) => {
+const ConnectScreen = ({
+  open,
+  status,
+  reconnectState,
+  onClose,
+  onReconnect,
+  onConnectDirect,
+}: ConnectScreenProps) => {
   const [error, setError] = useState('');
   const [directUrl, setDirectUrl] = useState('');
   const [showManual, setShowManual] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose, open]);
+
+  useEffect(() => {
+    if (open && showManual) {
+      inputRef.current?.focus();
+    }
+  }, [open, showManual]);
 
   const handleDirectConnect = useCallback(() => {
     setError('');
@@ -27,36 +59,79 @@ const ConnectScreen = ({ status, onReconnect, onConnectDirect }: ConnectScreenPr
     onConnectDirect(url);
   }, [directUrl, onConnectDirect]);
 
-  // 연결 시도 중 → 로딩 스피너
-  if (status === 'connecting') {
-    return (
-      <div className="flex items-center justify-center min-h-screen p-4 bg-(--bg-primary)">
-        <div className="text-center">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-(--bg-secondary) border border-(--border) mb-4">
-            <div className="w-8 h-8 border-2 border-(--accent) border-t-transparent rounded-full animate-spin" />
-          </div>
-          <p className="text-sm text-(--text-secondary)">
-            서버에 연결 중...
-          </p>
-        </div>
-      </div>
-    );
+  if (!open) {
+    return null;
   }
 
-  // 미연결 / 연결 실패
+  const statusInfo = {
+    connected: {
+      icon: Wifi,
+      iconClassName: 'text-(--success)',
+      title: '현재 연결됨',
+      description: '필요하면 다시 연결하거나 다른 서버로 전환할 수 있습니다.',
+    },
+    connecting: {
+      icon: Loader2,
+      iconClassName: 'text-(--warning) animate-spin',
+      title: reconnectState.attempt > 0
+        ? `자동 재연결 ${reconnectState.attempt}/${reconnectState.maxAttempts}`
+        : '서버 연결 중',
+      description: reconnectState.attempt > 0
+        ? '연결이 끊겨 자동으로 다시 붙는 중입니다.'
+        : '서버 연결을 시도하고 있습니다.',
+    },
+    disconnected: {
+      icon: WifiOff,
+      iconClassName: 'text-(--error)',
+      title: reconnectState.exhausted ? '자동 재연결 실패' : '연결이 끊어졌습니다',
+      description: reconnectState.exhausted
+        ? '자동 재연결 시도를 모두 마쳤습니다. 직접 다시 시도하거나 다른 서버를 입력하세요.'
+        : '필요하면 바로 재연결하거나 다른 서버 주소를 입력할 수 있습니다.',
+    },
+  }[status];
+
+  const StatusIcon = statusInfo.icon;
+
   return (
-    <div className="flex items-center justify-center min-h-screen p-4 bg-(--bg-primary)">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-(--bg-secondary) border border-(--border) mb-4">
-            <Wifi size={32} className="text-(--accent)" />
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/55 p-0 sm:items-center sm:p-4"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="connection-modal-title"
+        className="w-full max-w-md rounded-t-3xl border border-(--border) bg-(--bg-primary) p-5 shadow-2xl animate-fade-in sm:rounded-3xl sm:p-6"
+        style={{ animationDuration: '0.16s' }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-(--border) bg-(--bg-secondary)">
+              <StatusIcon size={22} className={statusInfo.iconClassName} />
+            </div>
+            <div>
+              <h2 id="connection-modal-title" className="text-lg font-semibold text-(--text-primary)">
+                연결 설정
+              </h2>
+              <p className="mt-1 text-sm font-medium text-(--text-primary)">
+                {statusInfo.title}
+              </p>
+              <p className="mt-1 text-sm text-(--text-secondary)">
+                {statusInfo.description}
+              </p>
+            </div>
           </div>
-          <h1 className="text-2xl font-bold text-(--text-primary)">
-            Remote CLI Agents
-          </h1>
-          <p className="text-(--text-secondary) mt-1 text-sm">
-            서버와 연결이 끊어졌습니다
-          </p>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl p-2 text-(--text-muted) transition-colors hover:bg-(--bg-secondary) hover:text-(--text-primary)"
+            aria-label="연결 설정 닫기"
+          >
+            <X size={16} />
+          </button>
         </div>
 
         {error && (
@@ -65,50 +140,77 @@ const ConnectScreen = ({ status, onReconnect, onConnectDirect }: ConnectScreenPr
           </div>
         )}
 
-        <div className="space-y-3 animate-fade-in">
-          {/* 재연결 버튼 */}
+        <div className="space-y-3">
+          {reconnectState.attempt > 0 && (
+            <div className="rounded-2xl border border-(--border) bg-(--bg-secondary) px-4 py-3 text-sm text-(--text-secondary)">
+              자동 재연결 시도:
+              {' '}
+              <span className="font-medium text-(--text-primary)">
+                {reconnectState.attempt}/{reconnectState.maxAttempts}
+              </span>
+              {reconnectState.nextDelayMs !== null && status === 'connecting' && (
+                <>
+                  {' '}
+                  <span className="text-(--text-muted)">
+                    다음 시도 예정
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+
           <button
             onClick={onReconnect}
-            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-lg bg-(--accent) text-white font-medium text-sm hover:opacity-90 transition-opacity"
+            className="w-full flex items-center justify-center gap-2 rounded-2xl bg-(--accent) px-4 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90"
           >
-            <RefreshCw size={16} />
-            재연결
+            {status === 'connecting' ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <RefreshCw size={16} />
+            )}
+            지금 다시 시도
           </button>
 
-          {/* 수동 입력 토글 */}
           {!showManual ? (
             <button
               onClick={() => setShowManual(true)}
-              className="w-full py-2 text-sm text-(--text-muted) hover:text-(--text-secondary) transition-colors"
+              className="w-full rounded-2xl border border-(--border) bg-(--bg-secondary) px-4 py-3 text-sm text-(--text-secondary) transition-colors hover:bg-(--bg-tertiary) hover:text-(--text-primary)"
             >
-              다른 서버에 연결...
+              다른 서버 연결
             </button>
           ) : (
-            <div className="space-y-3 pt-2 border-t border-(--border)">
+            <div className="space-y-3 rounded-2xl border border-(--border) bg-(--bg-secondary) p-4">
               <div>
-                <label className="block text-sm font-medium mb-1.5 text-(--text-secondary)">
+                <label className="mb-1.5 block text-sm font-medium text-(--text-secondary)">
                   WebSocket URL
                 </label>
                 <input
+                  ref={inputRef}
                   type="url"
                   value={directUrl}
                   onChange={(e) => setDirectUrl(e.target.value)}
                   placeholder="ws://192.168.1.100:9470/ws"
-                  className="w-full px-3 py-2.5 rounded-lg bg-(--input-bg) border border-(--input-border) text-sm font-mono placeholder-(--text-muted) focus:border-(--accent) focus:outline-none"
+                  className="w-full rounded-xl border border-(--input-border) bg-(--input-bg) px-3 py-2.5 font-mono text-sm placeholder-(--text-muted) focus:border-(--accent) focus:outline-none"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleDirectConnect();
                   }}
-                  autoFocus
                 />
               </div>
-              <button
-                onClick={handleDirectConnect}
-                disabled={!directUrl.trim()}
-                className="w-full flex items-center justify-center gap-1.5 py-2.5 px-4 rounded-lg bg-(--bg-secondary) border border-(--border) text-sm font-medium hover:bg-(--bg-tertiary) transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Wifi size={14} />
-                연결
-              </button>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button
+                  onClick={handleDirectConnect}
+                  disabled={!directUrl.trim()}
+                  className="flex-1 rounded-xl bg-(--bg-tertiary) px-4 py-2.5 text-sm font-medium transition-colors hover:bg-(--bg-hover) disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  직접 연결
+                </button>
+                <button
+                  onClick={() => setShowManual(false)}
+                  className="rounded-xl border border-(--border) px-4 py-2.5 text-sm text-(--text-secondary) transition-colors hover:bg-(--bg-tertiary) hover:text-(--text-primary)"
+                >
+                  접기
+                </button>
+              </div>
             </div>
           )}
         </div>
