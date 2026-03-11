@@ -177,6 +177,17 @@ describe('ClaudeAdapter', () => {
     adapter.sendMessage('thread-flow', 'inspect this');
 
     proc.stdout.write(`${JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-init',
+      model: 'claude-sonnet',
+    })}\n`);
+    await flushStreamEvents();
+
+    expect(adapter.getStatus().model).toBe('claude-sonnet');
+    expect((await adapter.getThreads())[0]?.sessionId).toBe('session-init');
+
+    proc.stdout.write(`${JSON.stringify({
       type: 'assistant',
       message: {
         content: [

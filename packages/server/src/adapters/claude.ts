@@ -334,6 +334,19 @@ export class ClaudeAdapter implements AgentAdapter {
         threadInfo.updatedAt = Date.now();
 
         switch (event.type) {
+          case 'system': {
+            if (event.subtype === 'init') {
+              if (event.session_id) {
+                threadInfo.sessionId = event.session_id;
+              }
+              if (event.model) {
+                this.status.model = event.model;
+              }
+              this.saveThreadMeta(threadInfo);
+            }
+            break;
+          }
+
           case 'assistant': {
             // stream-json 형식: message.content 배열에서 텍스트/tool_use 추출
             const msg = event.message as {
@@ -498,6 +511,7 @@ export class ClaudeAdapter implements AgentAdapter {
             break;
           }
 
+          case 'rate_limit_event':
           default:
             break;
         }
