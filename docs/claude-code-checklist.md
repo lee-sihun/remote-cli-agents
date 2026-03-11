@@ -57,7 +57,7 @@
 ### 3-1. sessionId 흐름
 - [x] `result.session_id` → `threadInfo.sessionId` → `saveThreadMeta` (디스크) → `start()` (복원) → `--resume` 전달
 - [x] `--resume`으로 이전 대화를 실제로 이어가는지 (Claude Code가 컨텍스트 유지)
-- [ ] 잘못된/만료된 sessionId로 `--resume` 시 에러 처리
+- [x] 잘못된/만료된 sessionId로 `--resume` 시 에러 처리
 - [x] 서버 재시작 후 디스크에서 sessionId 복원 → `--resume` 동작 확인
 
 ### 3-2. 메시지 히스토리
