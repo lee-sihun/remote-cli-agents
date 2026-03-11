@@ -41,6 +41,9 @@ const storeMock = vi.hoisted(() => ({
   }),
   loadMessages: vi.fn((threadId: string) => storeState.messages.get(threadId) || []),
   loadThreads: vi.fn((agentType: string) => storeState.threads.get(agentType) || []),
+  saveMessages: vi.fn((threadId: string, messages: AgentMessage[]) => {
+    storeState.messages.set(threadId, [...messages]);
+  }),
   saveThread: vi.fn((agentType: string, thread: ThreadSummary) => {
     const threads = storeState.threads.get(agentType) || [];
     const nextThreads = [...threads];
@@ -354,13 +357,8 @@ describe('ClaudeAdapter', () => {
     await flushStreamEvents();
 
     expect(adapter.getStreamingState('thread-flow')).toEqual({
-      content: 'partial answer',
-      toolCalls: [{
-        id: 'tool-1',
-        name: 'edit_file',
-        input: { path: 'a.ts' },
-        status: 'running',
-      }],
+      content: '',
+      toolCalls: [],
     });
 
     proc.stdout.write(`${JSON.stringify({
@@ -392,15 +390,31 @@ describe('ClaudeAdapter', () => {
     await flushStreamEvents();
 
     const deltaEvent = events.find((event) => event.type === 'message_delta');
-    const toolStart = events.find((event) => event.type === 'tool_start');
-    const toolComplete = events.find((event) => event.type === 'tool_complete');
-    const messageComplete = events.find((event) => event.type === 'message_complete');
+    const completeEvents = events.filter((event) => event.type === 'message_complete');
 
     expect(deltaEvent && deltaEvent.type === 'message_delta' ? deltaEvent.content : null).toBe('partial answer');
-    expect(toolStart && toolStart.type === 'tool_start' ? toolStart.tool.name : null).toBe('edit_file');
-    expect(toolComplete && toolComplete.type === 'tool_complete' ? toolComplete.tool.output : null).toBe('done');
-    expect(messageComplete && messageComplete.type === 'message_complete' ? messageComplete.message.reasoning : null).toBe('analyzing');
-    expect(messageComplete && messageComplete.type === 'message_complete' ? messageComplete.message.toolCalls?.[0]?.status : null).toBe('completed');
+    expect(completeEvents).toHaveLength(4);
+    expect(completeEvents[0] && completeEvents[0].type === 'message_complete'
+      ? completeEvents[0].message.content
+      : null).toBe('partial answer');
+    expect(completeEvents[0] && completeEvents[0].type === 'message_complete'
+      ? completeEvents[0].message.reasoning
+      : null).toBe('analyzing');
+    expect(completeEvents[1] && completeEvents[1].type === 'message_complete'
+      ? completeEvents[1].message.toolCalls?.[0]?.status
+      : null).toBe('running');
+    expect(completeEvents[2] && completeEvents[2].type === 'message_complete'
+      ? completeEvents[2].message.toolCalls?.[0]
+      : null).toEqual({
+      id: 'tool-1',
+      name: 'edit_file',
+      input: { path: 'a.ts' },
+      output: 'done',
+      status: 'completed',
+    });
+    expect(completeEvents[3] && completeEvents[3].type === 'message_complete'
+      ? completeEvents[3].message.content
+      : null).toBe('final answer');
     expect(adapter.getStatus().contextUsage).toEqual({
       used: 185,
       total: 1_000_000,
@@ -478,14 +492,20 @@ describe('ClaudeAdapter', () => {
     })}\n`);
     await flushStreamEvents();
 
-    expect(storeMock.saveThread).toHaveBeenCalledTimes(2);
+    expect(storeMock.saveThread).toHaveBeenCalledTimes(3);
     expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
       id: 'thread-save-meta',
       sessionId: 'saved-session',
       messageCount: 2,
       lastMessage: 'done',
     }));
-    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-save-meta', expect.objectContaining({
+    expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-save-meta', expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'done',
+      }),
+    ]));
+    expect(storeMock.appendMessage).not.toHaveBeenCalledWith('thread-save-meta', expect.objectContaining({
       role: 'assistant',
       content: 'done',
     }));
@@ -585,6 +605,52 @@ describe('ClaudeAdapter', () => {
       expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '--permission-mode', 'plan', '-p']),
       expect.any(Object),
     );
+  });
+
+  it('updates an existing thread with message-scoped config overrides', async () => {
+    const firstProc = createFakeChildProcess();
+    const secondProc = createFakeChildProcess();
+    firstProc.pid = 9661;
+    secondProc.pid = 9662;
+    childProcessMock.spawn
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({
+      type: 'claude',
+      cwd: 'C:/workspace',
+      model: 'sonnet',
+      permissionMode: 'plan',
+      effortLevel: 'high',
+    });
+    adapter.sendMessage('thread-override', 'first');
+
+    firstProc.emit('close', 0);
+    await flushStreamEvents();
+
+    adapter.sendMessage('thread-override', 'second', {
+      type: 'claude',
+      model: 'opus',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'medium',
+    });
+
+    expect(childProcessMock.spawn).toHaveBeenNthCalledWith(
+      2,
+      'claude',
+      expect.arrayContaining(['--model', 'opus', '--effort', 'medium', '--permission-mode', 'acceptEdits', '-p']),
+      expect.any(Object),
+    );
+
+    const threads = await adapter.getThreads();
+    expect(threads[0]?.config).toMatchObject({
+      type: 'claude',
+      model: 'opus',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'medium',
+    });
   });
 
   it('avoids duplicate error events when stderr is followed by a non-zero close', async () => {
@@ -721,10 +787,12 @@ describe('ClaudeAdapter', () => {
       messageCount: 2,
       lastMessage: 'partial',
     }));
-    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-close', expect.objectContaining({
-      role: 'assistant',
-      content: 'partial',
-    }));
+    expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-close', expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'partial',
+      }),
+    ]));
   });
 
   it('persists the last assistant message on non-zero process close', async () => {
@@ -747,10 +815,12 @@ describe('ClaudeAdapter', () => {
     proc.emit('close', 2);
     await flushStreamEvents();
 
-    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-close-error', expect.objectContaining({
-      role: 'assistant',
-      content: 'partial error output',
-    }));
+    expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-close-error', expect.arrayContaining([
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'partial error output',
+      }),
+    ]));
     expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
       id: 'thread-close-error',
       lastMessage: 'partial error output',
@@ -788,21 +858,17 @@ describe('ClaudeAdapter', () => {
     })}\n`);
     await flushStreamEvents();
 
-    const completed = events.find((event) => event.type === 'message_complete');
-    expect(completed && completed.type === 'message_complete' ? completed.message.toolCalls : []).toEqual([
-      {
-        id: 'tool-1',
-        name: 'read_file',
-        input: { path: 'a.ts' },
-        status: 'abandoned',
-      },
-      {
-        id: 'tool-2',
-        name: 'read_file',
-        input: { path: 'b.ts' },
-        status: 'abandoned',
-      },
-    ]);
+    const completed = events.filter((event) => event.type === 'message_complete');
+    expect(completed).toHaveLength(5);
+    expect(completed[2] && completed[2].type === 'message_complete'
+      ? completed[2].message.toolCalls?.[0]?.status
+      : null).toBe('abandoned');
+    expect(completed[3] && completed[3].type === 'message_complete'
+      ? completed[3].message.toolCalls?.[0]?.status
+      : null).toBe('abandoned');
+    expect(completed[4] && completed[4].type === 'message_complete'
+      ? completed[4].message.content
+      : null).toBe('done');
   });
 
   it('keeps pending tool calls stable when another assistant event arrives before tool_result', async () => {
@@ -842,13 +908,14 @@ describe('ClaudeAdapter', () => {
     })}\n`);
     await flushStreamEvents();
 
-    const completed = events.find((event) => event.type === 'message_complete');
-    expect(completed && completed.type === 'message_complete'
-      ? completed.message.content
-      : null).toBe('continuing after tool');
-    expect(completed && completed.type === 'message_complete'
-      ? completed.message.toolCalls?.[0]?.status
+    const completed = events.filter((event) => event.type === 'message_complete');
+    expect(completed).toHaveLength(3);
+    expect(completed[1] && completed[1].type === 'message_complete'
+      ? completed[1].message.toolCalls?.[0]?.status
       : null).toBe('abandoned');
+    expect(completed[2] && completed[2].type === 'message_complete'
+      ? completed[2].message.content
+      : null).toBe('continuing after tool');
   });
 
   it('falls back to the latest tool call id when tool_result omits tool_use_id', async () => {
@@ -888,9 +955,20 @@ describe('ClaudeAdapter', () => {
     })}\n`);
     await flushStreamEvents();
 
-    const toolComplete = events.find((event) => event.type === 'tool_complete');
-    expect(toolComplete && toolComplete.type === 'tool_complete' ? toolComplete.tool.id : null).toBe('tool-1');
-    expect(toolComplete && toolComplete.type === 'tool_complete' ? toolComplete.tool.output : null).toBe('done');
+    const completed = events.filter((event) => event.type === 'message_complete');
+    expect(completed).toHaveLength(3);
+    expect(completed[1] && completed[1].type === 'message_complete'
+      ? completed[1].message.toolCalls?.[0]
+      : null).toEqual({
+      id: 'tool-1',
+      name: 'read_file',
+      input: { path: 'a.ts' },
+      output: 'done',
+      status: 'completed',
+    });
+    expect(completed[2] && completed[2].type === 'message_complete'
+      ? completed[2].message.content
+      : null).toBe('done');
   });
 
   it('logs handler errors without breaking remaining event delivery', async () => {

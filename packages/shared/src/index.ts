@@ -17,6 +17,7 @@ export interface AgentConfig {
   cwd?: string;
   env?: Record<string, string>;
   permissionMode?: string;
+  approvalMode?: string;
   model?: string;
   effortLevel?: string;
 }
@@ -193,7 +194,7 @@ export type AgentEvent =
 // ─── Client → Server Messages ───
 
 export type ClientMessage =
-  | { type: 'send_message'; agentType: AgentType; threadId?: string; content: string }
+  | { type: 'send_message'; agentType: AgentType; threadId?: string; content: string; config?: AgentConfig }
   | { type: 'interrupt'; agentType: AgentType; threadId: string }
   | { type: 'approve'; agentType: AgentType; threadId: string; toolCallId: string; approved: boolean }
   | { type: 'list_threads'; agentType: AgentType }

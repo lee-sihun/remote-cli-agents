@@ -105,7 +105,7 @@ export class PtyAdapter implements AgentAdapter {
     });
   }
 
-  sendMessage(threadId: string | undefined, message: string): void {
+  sendMessage(threadId: string | undefined, message: string, _config?: AgentConfig): void {
     const tid = threadId || randomUUID();
     const existingSession = this.sessions.get(tid);
 

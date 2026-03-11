@@ -20,7 +20,7 @@ interface FakeAdapter {
   name: string;
   onEvent: (handler: (event: AgentEvent) => void) => void;
   readonly type: AgentType;
-  sendMessage: (threadId: string, message: string) => void;
+  sendMessage: (threadId: string, message: string, config?: AgentConfig) => void;
   start: (config: AgentConfig) => Promise<void>;
   stop: () => Promise<void>;
 }
@@ -258,6 +258,35 @@ describe('server helpers', () => {
       'C:/workspace',
     );
 
-    expect(adapter.sendMessage).toHaveBeenCalledWith('client-thread-id', 'hello');
+    expect(adapter.sendMessage).toHaveBeenCalledWith('client-thread-id', 'hello', undefined);
+  });
+
+  it('passes message-scoped config through to the adapter', async () => {
+    const ws = createFakeWebSocket();
+    const adapter = createFakeAdapter();
+    const adapters = new Map<AgentType, FakeAdapter>([['claude', adapter]]);
+
+    await handleClientMessage(
+      ws as unknown as WebSocket,
+      {
+        type: 'send_message',
+        agentType: 'claude',
+        threadId: 'thread-with-config',
+        content: 'hello',
+        config: {
+          type: 'claude',
+          model: 'opus',
+          permissionMode: 'plan',
+        },
+      } satisfies ClientMessage,
+      adapters as never,
+      'C:/workspace',
+    );
+
+    expect(adapter.sendMessage).toHaveBeenCalledWith('thread-with-config', 'hello', {
+      type: 'claude',
+      model: 'opus',
+      permissionMode: 'plan',
+    });
   });
 });

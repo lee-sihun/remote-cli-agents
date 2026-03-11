@@ -71,6 +71,67 @@ describe('useAgentStore', () => {
     expect(useAgentStore.getState().activeToolCalls.has('thread-1')).toBe(false);
   });
 
+  it('adds a new thread summary immediately when the first user message is sent', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.getState().upsertThreadFromUserMessage(
+      'claude',
+      'thread-1',
+      'Investigate sidebar refresh issue',
+      {
+        type: 'claude',
+        model: 'sonnet',
+        permissionMode: 'plan',
+      },
+    );
+    useAgentStore.getState().addUserMessage(
+      'thread-1',
+      'Investigate sidebar refresh issue',
+    );
+
+    const threads = useAgentStore.getState().threads.get('claude') || [];
+
+    expect(threads).toHaveLength(1);
+    expect(threads[0]).toMatchObject({
+      id: 'thread-1',
+      agentType: 'claude',
+      title: 'Investigate sidebar refresh issue',
+      lastMessage: 'Investigate sidebar refresh issue',
+      messageCount: 1,
+      config: {
+        type: 'claude',
+        model: 'sonnet',
+        permissionMode: 'plan',
+      },
+    });
+  });
+
+  it('persists current settings and last-used defaults separately', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.getState().setAgentSettings('claude', {
+      model: 'opus',
+      permissionMode: 'acceptEdits',
+    });
+    useAgentStore.getState().setLastUsedAgentSettings('claude', {
+      model: 'sonnet',
+      permissionMode: 'plan',
+    });
+
+    expect(JSON.parse(localStorage.getItem('rca_agent_settings') || '{}')).toEqual({
+      claude: {
+        model: 'opus',
+        permissionMode: 'acceptEdits',
+      },
+    });
+    expect(JSON.parse(localStorage.getItem('rca_last_used_agent_settings') || '{}')).toEqual({
+      claude: {
+        model: 'sonnet',
+        permissionMode: 'plan',
+      },
+    });
+  });
+
   it('deduplicates tool calls and upserts completed assistant messages', async () => {
     const { useAgentStore } = await import('./useAgent.ts');
 
@@ -127,6 +188,34 @@ describe('useAgentStore', () => {
       status: 'completed',
       output: 'done',
     }]);
+  });
+
+  it('does not merge unrelated active tool calls into completed assistant messages', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      activeToolCalls: new Map([['thread-1', [baseToolCall]]]),
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'message_complete',
+        threadId: 'thread-1',
+        agentType: 'claude',
+        message: {
+          id: 'assistant-2',
+          role: 'assistant',
+          content: 'checkpoint',
+          timestamp: 3,
+        },
+      },
+    });
+
+    const messages = useAgentStore.getState().messages.get('thread-1') || [];
+
+    expect(messages[0]?.content).toBe('checkpoint');
+    expect(messages[0]?.toolCalls).toBeUndefined();
   });
 
   it('deduplicates repeated approval requests by toolCall id', async () => {

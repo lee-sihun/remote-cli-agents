@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   AgentType,
   AgentInfo,
+  AgentConfig,
   AgentMessage,
   AgentStatus,
   ThreadSummary,
@@ -40,12 +41,20 @@ interface AgentState {
 
   // 에이전트 설정
   agentSettings: Map<AgentType, Record<string, string>>;
+  lastUsedAgentSettings: Map<AgentType, Record<string, string>>;
 
   // Actions
   setConnectionStatus: (status: 'disconnected' | 'connecting' | 'connected') => void;
   setActiveAgent: (agent: AgentType | null) => void;
   setActiveThread: (threadId: string | null) => void;
   setAgentSettings: (agent: AgentType, settings: Record<string, string>) => void;
+  setLastUsedAgentSettings: (agent: AgentType, settings: Record<string, string>) => void;
+  upsertThreadFromUserMessage: (
+    agentType: AgentType,
+    threadId: string,
+    content: string,
+    config?: AgentConfig,
+  ) => void;
   processServerMessage: (msg: ServerMessage) => void;
   addUserMessage: (threadId: string, content: string) => void;
   clearMessages: (threadId: string) => void;
@@ -67,12 +76,17 @@ function saveTo(key: string, value: unknown): void {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
 }
 
-function dedupeToolCalls(toolCalls: ToolCall[]): ToolCall[] {
-  const merged = new Map<string, ToolCall>();
-  for (const toolCall of toolCalls) {
-    merged.set(toolCall.id, toolCall);
-  }
-  return Array.from(merged.values());
+function loadSavedAgentSettings(key: string): Map<AgentType, Record<string, string>> {
+  const saved = loadSaved<Partial<Record<AgentType, Record<string, string>>>>(key, {});
+  return new Map(Object.entries(saved) as Array<[AgentType, Record<string, string>]>);
+}
+
+function saveAgentSettings(key: string, map: Map<AgentType, Record<string, string>>): void {
+  saveTo(key, Object.fromEntries(map));
+}
+
+function summarizeThreadContent(content: string, maxLength: number): string {
+  return content.trim().slice(0, maxLength) || 'New conversation';
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -96,7 +110,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   gitResults: new Map(),
 
-  agentSettings: new Map(),
+  agentSettings: loadSavedAgentSettings('rca_agent_settings'),
+  lastUsedAgentSettings: loadSavedAgentSettings('rca_last_used_agent_settings'),
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
 
@@ -113,7 +128,52 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setAgentSettings: (agent, settings) => {
     const map = new Map(get().agentSettings);
     map.set(agent, settings);
+    saveAgentSettings('rca_agent_settings', map);
     set({ agentSettings: map });
+  },
+
+  setLastUsedAgentSettings: (agent, settings) => {
+    const map = new Map(get().lastUsedAgentSettings);
+    map.set(agent, settings);
+    saveAgentSettings('rca_last_used_agent_settings', map);
+    set({ lastUsedAgentSettings: map });
+  },
+
+  upsertThreadFromUserMessage: (agentType, threadId, content, config) => {
+    const state = get();
+    const now = Date.now();
+    const threads = new Map(state.threads);
+    const agentThreads = [...(threads.get(agentType) || [])];
+    const existingMessages = state.messages.get(threadId) || [];
+    const threadIndex = agentThreads.findIndex((thread) => thread.id === threadId);
+    const title = summarizeThreadContent(content, 50);
+    const lastMessage = summarizeThreadContent(content, 100);
+
+    if (threadIndex >= 0) {
+      const existing = agentThreads[threadIndex];
+      agentThreads[threadIndex] = {
+        ...existing,
+        title: existing.title || title,
+        lastMessage,
+        messageCount: existingMessages.length + 1,
+        updatedAt: now,
+        config: config || existing.config,
+      };
+    } else {
+      agentThreads.unshift({
+        id: threadId,
+        agentType,
+        title,
+        lastMessage,
+        messageCount: existingMessages.length + 1,
+        createdAt: now,
+        updatedAt: now,
+        config,
+      });
+    }
+
+    threads.set(agentType, agentThreads);
+    set({ threads });
   },
 
   addUserMessage: (threadId, content) => {
@@ -229,27 +289,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           }
 
           case 'message_complete': {
-            // 스트리밍 중 tool calls를 메시지에 첨부
-            const pendingTools = state.activeToolCalls.get(event.threadId) || [];
-            const completeMessage = pendingTools.length > 0
-              ? {
-                ...event.message,
-                toolCalls: dedupeToolCalls([
-                  ...pendingTools,
-                  ...(event.message.toolCalls || []),
-                ]),
-              }
-              : event.message;
-
             const messages = new Map(state.messages);
             const existing = messages.get(event.threadId) || [];
-            const existingIndex = existing.findIndex((message) => message.id === completeMessage.id);
+            const existingIndex = existing.findIndex((message) => message.id === event.message.id);
             if (existingIndex >= 0) {
               const updated = [...existing];
-              updated[existingIndex] = completeMessage;
+              updated[existingIndex] = event.message;
               messages.set(event.threadId, updated);
             } else {
-              messages.set(event.threadId, [...existing, completeMessage]);
+              messages.set(event.threadId, [...existing, event.message]);
             }
 
             const sc = new Map(state.streamingContent);
@@ -257,7 +305,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
             // Update thread summary
             const threads = new Map(state.threads);
-            const agentThreads = threads.get(event.agentType) || [];
+            const agentThreads = [...(threads.get(event.agentType) || [])];
             const threadIdx = agentThreads.findIndex(
               (t) => t.id === event.threadId,
             );
@@ -273,7 +321,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               threads.set(event.agentType, updated);
             } else {
               // New thread
-              agentThreads.push({
+              agentThreads.unshift({
                 id: event.threadId,
                 agentType: event.agentType,
                 title:

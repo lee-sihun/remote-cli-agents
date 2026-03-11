@@ -116,7 +116,7 @@ export class ClaudeAdapter implements AgentAdapter {
     });
   }
 
-  sendMessage(threadId: string | undefined, message: string): void {
+  sendMessage(threadId: string | undefined, message: string, config?: AgentConfig): void {
     const tid = threadId || randomUUID();
     const existingThread = this.threads.get(tid);
 
@@ -135,7 +135,7 @@ export class ClaudeAdapter implements AgentAdapter {
       this.status.model = existingThread.model;
     }
 
-    const threadConfig = this.resolveThreadConfig(existingThread);
+    const threadConfig = this.resolveThreadConfig(existingThread, config);
 
     if (existingThread?.sessionId) {
       console.log(`[claude] Resuming session ${existingThread.sessionId} for thread ${tid}`);
@@ -303,13 +303,80 @@ export class ClaudeAdapter implements AgentAdapter {
     });
 
     // stdout에서 JSON 이벤트 파싱
-    let accumulatedText = '';
-    let accumulatedReasoning = '';
+    let streamedText = '';
+    let pendingText = '';
+    let pendingReasoning = '';
     const pendingToolCalls = new Map<string, ToolCall>(); // tool_use_id → ToolCall
     let lastToolCallId: string | null = null; // 가장 최근 tool_use ID (순차 fallback용)
-    let messageCompleted = false;
-    const collectedToolCalls: ToolCall[] = []; // 완료된 도구 호출 수집 (디스크 저장용)
+    let resultReceived = false;
+    let emittedAssistantMessages = 0;
     let resultMeta: { model?: string; costUsd?: number; usage?: { inputTokens: number; outputTokens: number } } = {};
+
+    const saveThreadMessages = () => {
+      store.saveMessages(threadId, threadInfo.messages);
+      this.saveThreadMeta(threadInfo);
+    };
+
+    const upsertAssistantMessage = (message: AgentMessage) => {
+      const existingIndex = threadInfo.messages.findIndex((entry) => entry.id === message.id);
+      if (existingIndex >= 0) {
+        threadInfo.messages[existingIndex] = message;
+      } else {
+        threadInfo.messages.push(message);
+        emittedAssistantMessages += 1;
+      }
+
+      threadInfo.updatedAt = Date.now();
+      saveThreadMessages();
+      this.emit({
+        type: 'message_complete',
+        threadId,
+        agentType: 'claude',
+        message,
+      });
+    };
+
+    const flushTextSegment = (
+      text: string,
+      meta?: { model?: string; costUsd?: number; usage?: { inputTokens: number; outputTokens: number } },
+    ) => {
+      const normalized = text.trim();
+      const reasoning = pendingReasoning || undefined;
+      pendingText = '';
+      pendingReasoning = '';
+
+      if (!normalized && !reasoning) {
+        const buf = this.streamingBuffers.get(threadId);
+        if (buf) buf.content = '';
+        return;
+      }
+
+      const message: AgentMessage = {
+        id: randomUUID(),
+        role: 'assistant',
+        content: text,
+        timestamp: Date.now(),
+        reasoning,
+        model: meta?.model,
+        costUsd: meta?.costUsd,
+        usage: meta?.usage,
+      };
+      const buf = this.streamingBuffers.get(threadId);
+      if (buf) buf.content = '';
+      upsertAssistantMessage(message);
+    };
+
+    const upsertToolMessage = (tool: ToolCall) => {
+      const existing = threadInfo.messages.find((entry) => entry.id === tool.id);
+      const message: AgentMessage = {
+        id: tool.id,
+        role: 'assistant',
+        content: '',
+        timestamp: existing?.timestamp || Date.now(),
+        toolCalls: [{ ...tool }],
+      };
+      upsertAssistantMessage(message);
+    };
 
     if (proc.stdout) {
       const rl = createInterface({ input: proc.stdout });
@@ -365,9 +432,10 @@ export class ClaudeAdapter implements AgentAdapter {
               const buf = this.streamingBuffers.get(threadId);
               for (const block of msg.content) {
                 if (block.type === 'thinking' && block.thinking) {
-                  accumulatedReasoning += block.thinking;
+                  pendingReasoning += block.thinking;
                 } else if (block.type === 'text' && block.text) {
-                  accumulatedText += block.text;
+                  pendingText += block.text;
+                  streamedText += block.text;
                   if (buf) buf.content += block.text;
                   this.emit({
                     type: 'message_delta',
@@ -376,6 +444,9 @@ export class ClaudeAdapter implements AgentAdapter {
                     content: block.text,
                   });
                 } else if (block.type === 'tool_use' && block.name) {
+                  if (pendingText || pendingReasoning) {
+                    flushTextSegment(pendingText);
+                  }
                   const toolCall: ToolCall = {
                     id: block.id || randomUUID(),
                     name: block.name,
@@ -384,13 +455,7 @@ export class ClaudeAdapter implements AgentAdapter {
                   };
                   pendingToolCalls.set(toolCall.id, toolCall);
                   lastToolCallId = toolCall.id;
-                  if (buf) buf.toolCalls.push(toolCall);
-                  this.emit({
-                    type: 'tool_start',
-                    threadId,
-                    agentType: 'claude',
-                    tool: toolCall,
-                  });
+                  upsertToolMessage(toolCall);
                 }
               }
             }
@@ -419,19 +484,9 @@ export class ClaudeAdapter implements AgentAdapter {
 
                   matched.output = block.content || '';
                   matched.status = block.is_error ? 'failed' : 'completed';
-                  // 버퍼 내 도구 상태 업데이트
-                  if (buf) {
-                    const idx = buf.toolCalls.findIndex((t) => t.id === matched.id);
-                    if (idx >= 0) buf.toolCalls[idx] = { ...matched };
-                  }
-                  collectedToolCalls.push({ ...matched });
                   pendingToolCalls.delete(matched.id);
-                  this.emit({
-                    type: 'tool_complete',
-                    threadId,
-                    agentType: 'claude',
-                    tool: { ...matched },
-                  });
+                  void buf;
+                  upsertToolMessage({ ...matched });
                 }
               }
             }
@@ -485,38 +540,34 @@ export class ClaudeAdapter implements AgentAdapter {
             // 스트리밍 버퍼 정리
             this.streamingBuffers.delete(threadId);
 
-            // 최종 메시지 생성
-            messageCompleted = true;
-            // 미완료 tool call이 남아있으면 수집
+            resultReceived = true;
+
             for (const [, tc] of pendingToolCalls) {
-              collectedToolCalls.push({ ...tc, status: 'abandoned' });
+              upsertToolMessage({ ...tc, status: 'abandoned' });
             }
             pendingToolCalls.clear();
-            const finalText = accumulatedText || (event.result as string) || '';
-            const assistantMessage: AgentMessage = {
-              id: randomUUID(),
-              role: 'assistant',
-              content: finalText,
-              timestamp: Date.now(),
-              toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
-              reasoning: accumulatedReasoning || undefined,
-              model: resultMeta.model,
-              costUsd: resultMeta.costUsd,
-              usage: resultMeta.usage,
-            };
 
-            threadInfo.messages.push(assistantMessage);
-            store.appendMessage(threadId, assistantMessage);
-            this.saveThreadMeta(threadInfo);
+            if (pendingText || pendingReasoning) {
+              flushTextSegment(pendingText, resultMeta);
+            } else {
+              const resultText = typeof event.result === 'string' ? event.result : '';
+              if (resultText) {
+                if (!streamedText) {
+                  flushTextSegment(resultText, resultMeta);
+                } else if (resultText.startsWith(streamedText)) {
+                  const suffix = resultText.slice(streamedText.length);
+                  if (suffix) {
+                    streamedText += suffix;
+                    flushTextSegment(suffix, resultMeta);
+                  }
+                } else if (resultText !== streamedText) {
+                  streamedText += resultText;
+                  flushTextSegment(resultText, resultMeta);
+                }
+              }
+            }
 
-            this.emit({
-              type: 'message_complete',
-              threadId,
-              agentType: 'claude',
-              message: assistantMessage,
-            });
-
-            accumulatedText = '';
+            saveThreadMessages();
             break;
           }
 
@@ -587,28 +638,19 @@ export class ClaudeAdapter implements AgentAdapter {
       }
 
       // result 이벤트 없이 종료된 경우 message_complete 보장
-      if (!messageCompleted) {
+      if (!resultReceived) {
         for (const [, tc] of pendingToolCalls) {
-          collectedToolCalls.push({ ...tc, status: 'abandoned' });
+          upsertToolMessage({ ...tc, status: 'abandoned' });
         }
         pendingToolCalls.clear();
-        const assistantMessage: AgentMessage = {
-          id: randomUUID(),
-          role: 'assistant',
-          content: accumulatedText || (code !== 0 ? `[프로세스 종료: code ${code}]` : '[응답 없음]'),
-          timestamp: Date.now(),
-          toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
-        };
-        threadInfo.messages.push(assistantMessage);
-        store.appendMessage(threadId, assistantMessage);
-        this.saveThreadMeta(threadInfo);
 
-        this.emit({
-          type: 'message_complete',
-          threadId,
-          agentType: 'claude',
-          message: assistantMessage,
-        });
+        if (pendingText || pendingReasoning) {
+          flushTextSegment(pendingText);
+        } else if (emittedAssistantMessages === 0) {
+          flushTextSegment(code !== 0 ? `[프로세스 종료: code ${code}]` : '[응답 없음]');
+        } else {
+          saveThreadMessages();
+        }
       }
 
       const nextActiveThread = Array.from(this.threads.values()).find((t) => this.isProcessActive(t.process));
@@ -699,12 +741,16 @@ export class ClaudeAdapter implements AgentAdapter {
     return undefined;
   }
 
-  private resolveThreadConfig(existingThread?: ThreadInfo): AgentConfig {
-    const baseConfig = existingThread?.config || this.config || { type: 'claude' as const };
+  private resolveThreadConfig(existingThread?: ThreadInfo, overrideConfig?: AgentConfig): AgentConfig {
+    const baseConfig = {
+      ...(this.config || { type: 'claude' as const }),
+      ...(existingThread?.config || {}),
+      ...(overrideConfig || {}),
+    };
     return {
       ...baseConfig,
       type: 'claude',
-      cwd: existingThread?.cwd || baseConfig.cwd || this.config?.cwd,
+      cwd: existingThread?.cwd || overrideConfig?.cwd || baseConfig.cwd || this.config?.cwd,
       env: baseConfig.env ? { ...baseConfig.env } : undefined,
     };
   }

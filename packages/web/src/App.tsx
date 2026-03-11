@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AGENT_OPTIONS } from '@rca/shared';
 import {
   Menu,
   X,
@@ -14,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './hooks/useAgent';
-import type { AgentType, ClientMessage, ServerMessage } from './lib/protocol';
+import type { AgentConfig, AgentOptionDef, AgentType, ClientMessage, ServerMessage } from './lib/protocol';
 import { generateThreadId } from './lib/protocol';
 import ConnectScreen from './components/ConnectScreen';
 import ChatView from './components/ChatView';
@@ -47,6 +48,80 @@ function useTheme() {
   }, [dark]);
 
   return { dark, toggle: () => setDark((d) => !d) };
+}
+
+function mergeAgentSettings(
+  options: AgentOptionDef[],
+  settings?: Partial<Record<string, unknown>> | AgentConfig,
+): Record<string, string> {
+  const merged = Object.fromEntries(
+    options.map((option) => [option.key, option.defaultValue || '']),
+  ) as Record<string, string>;
+
+  if (!settings) {
+    return merged;
+  }
+
+  const source = settings as Record<string, unknown>;
+  for (const option of options) {
+    const value = source[option.key];
+    if (typeof value === 'string') {
+      merged[option.key] = value;
+    }
+  }
+
+  return merged;
+}
+
+function isOptionVisible(
+  option: AgentOptionDef,
+  settings: Record<string, string>,
+  options: AgentOptionDef[],
+): boolean {
+  if (!option.visibleWhen) {
+    return true;
+  }
+
+  return Object.entries(option.visibleWhen).every(([dependencyKey, allowedValues]) => {
+    const currentValue = settings[dependencyKey]
+      || options.find((candidate) => candidate.key === dependencyKey)?.defaultValue
+      || '';
+    return allowedValues.includes(currentValue);
+  });
+}
+
+function buildAgentConfig(
+  agentType: AgentType,
+  settings: Record<string, string>,
+): AgentConfig {
+  const options = AGENT_OPTIONS[agentType] || [];
+  const config: AgentConfig = { type: agentType };
+  const configRecord = config as unknown as Record<string, string>;
+
+  for (const option of options) {
+    if (!isOptionVisible(option, settings, options)) {
+      continue;
+    }
+
+    const value = settings[option.key];
+    if (!value) {
+      continue;
+    }
+
+    configRecord[option.key] = value;
+  }
+
+  return config;
+}
+
+function sameSettings(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if ((a[key] || '') !== (b[key] || '')) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export default function App() {
@@ -93,6 +168,24 @@ export default function App() {
   const wsRef = useRef(ws);
   wsRef.current = ws;
 
+  const syncAgentDefaults = useCallback((agent: AgentType) => {
+    const options = AGENT_OPTIONS[agent] || [];
+    if (options.length === 0) {
+      return;
+    }
+
+    const settings = mergeAgentSettings(
+      options,
+      storeRef.current.lastUsedAgentSettings.get(agent),
+    );
+
+    wsRef.current.send({
+      type: 'select_agent',
+      agentType: agent,
+      config: buildAgentConfig(agent, settings),
+    });
+  }, []);
+
   // Request initial data on connect + 활성 스레드 자동 복원
   useEffect(() => {
     if (ws.status === 'connected') {
@@ -102,7 +195,7 @@ export default function App() {
       const s = storeRef.current;
       if (s.activeAgent) {
         ws.send({ type: 'list_threads', agentType: s.activeAgent });
-        ws.send({ type: 'select_agent', agentType: s.activeAgent });
+        syncAgentDefaults(s.activeAgent);
 
         // 활성 스레드 상태 복원 (메시지 + 스트리밍 + 에이전트 상태)
         if (s.activeThread) {
@@ -111,7 +204,7 @@ export default function App() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws.status]);
+  }, [syncAgentDefaults, ws.status]);
 
   // Request threads when agent changes
   const prevAgentRef = useRef<AgentType | null>(store.activeAgent);
@@ -179,11 +272,42 @@ export default function App() {
     ? store.agentSettings.get(store.activeAgent) || {}
     : {};
 
+  useEffect(() => {
+    if (!store.activeAgent) return;
+
+    const options = AGENT_OPTIONS[store.activeAgent] || [];
+    const fallbackSettings = mergeAgentSettings(
+      options,
+      store.lastUsedAgentSettings.get(store.activeAgent),
+    );
+    const desiredSettings = store.activeThread && activeThreadSummary?.config
+      ? mergeAgentSettings(options, activeThreadSummary.config)
+      : fallbackSettings;
+
+    if (!sameSettings(currentAgentSettings, desiredSettings)) {
+      store.setAgentSettings(store.activeAgent, desiredSettings);
+    }
+  }, [
+    activeThreadSummary?.config,
+    currentAgentSettings,
+    store,
+    store.activeAgent,
+    store.activeThread,
+    store.lastUsedAgentSettings,
+  ]);
+
   // Handlers (ref 패턴: 의존성 없이 안정적인 참조)
   const handleSendMessage = useCallback(
     (content: string) => {
       const s = storeRef.current;
       if (!s.activeAgent) return;
+
+      const settings = mergeAgentSettings(
+        AGENT_OPTIONS[s.activeAgent] || [],
+        s.agentSettings.get(s.activeAgent),
+      );
+      const config = buildAgentConfig(s.activeAgent, settings);
+      s.setLastUsedAgentSettings(s.activeAgent, settings);
 
       // 새 대화: threadId를 클라이언트에서 생성
       const threadId = s.activeThread || generateThreadId();
@@ -191,7 +315,7 @@ export default function App() {
         s.setActiveThread(threadId);
       }
 
-      s.upsertThreadFromUserMessage(s.activeAgent, threadId, content);
+      s.upsertThreadFromUserMessage(s.activeAgent, threadId, content, config);
       s.addUserMessage(threadId, content);
 
       wsRef.current.send({
@@ -199,6 +323,7 @@ export default function App() {
         agentType: s.activeAgent,
         threadId,
         content,
+        config,
       });
     },
     [],
@@ -230,8 +355,11 @@ export default function App() {
     (agent: AgentType) => {
       storeRef.current.setActiveAgent(agent);
       storeRef.current.setActiveThread(null);
+      if (wsRef.current.status === 'connected') {
+        syncAgentDefaults(agent);
+      }
     },
-    [],
+    [syncAgentDefaults],
   );
 
   const handleSelectThread = useCallback(
@@ -286,20 +414,20 @@ export default function App() {
       const s = storeRef.current;
       if (!s.activeAgent) return;
 
-      const prev = s.agentSettings.get(s.activeAgent) || {};
-      const updated = { ...prev, [key]: value };
+      const updated = {
+        ...mergeAgentSettings(
+          AGENT_OPTIONS[s.activeAgent] || [],
+          s.agentSettings.get(s.activeAgent),
+        ),
+        [key]: value,
+      };
       s.setAgentSettings(s.activeAgent, updated);
 
       // 서버에 설정 전달
       wsRef.current.send({
         type: 'select_agent',
         agentType: s.activeAgent,
-        config: {
-          type: s.activeAgent,
-          model: updated.model || undefined,
-          permissionMode: updated.permissionMode || updated.approvalMode || undefined,
-          ...updated,
-        },
+        config: buildAgentConfig(s.activeAgent, updated),
       });
     },
     [],
@@ -392,7 +520,7 @@ export default function App() {
                     ?.name || store.activeAgent}
                 </span>
               )}
-              {activeModel && (
+              {activeModel && store.activeAgent !== 'claude' && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-(--bg-tertiary) text-(--text-muted)">
                   {activeModel}
                 </span>

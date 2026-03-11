@@ -24,7 +24,7 @@ export interface AgentAdapter {
   isAvailable(): Promise<boolean>;
 
   // 대화
-  sendMessage(threadId: string, message: string): void;
+  sendMessage(threadId: string, message: string, config?: AgentConfig): void;
   interrupt(threadId: string): void;
   approve?(threadId: string, toolCallId: string, approved: boolean): void;
 

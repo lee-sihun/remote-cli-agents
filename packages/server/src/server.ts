@@ -420,7 +420,7 @@ export async function handleClientMessage(
       }
 
       const threadId = msg.threadId || randomUUID();
-      adapter.sendMessage(threadId, msg.content);
+      adapter.sendMessage(threadId, msg.content, msg.config);
       break;
     }
 
