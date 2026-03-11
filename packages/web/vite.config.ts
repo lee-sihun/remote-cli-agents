@@ -37,13 +37,13 @@ export default defineConfig({
     host: true,
     port: 9471,
     proxy: {
-      '/api': 'http://localhost:9470',
+      '/api': 'http://127.0.0.1:9470',
       '/ws': {
-        target: 'ws://localhost:9470',
+        target: 'ws://127.0.0.1:9470',
         ws: true,
       },
       '/relay': {
-        target: 'ws://localhost:9470',
+        target: 'ws://127.0.0.1:9470',
         ws: true,
       },
     },

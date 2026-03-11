@@ -27,6 +27,15 @@ const EMPTY_RECONNECT_STATE: ReconnectState = {
   exhausted: false,
 };
 
+function buildDirectConnectionUrl(baseUrl: string, token: string, sessionId: string): string {
+  const httpUrl = new URL(baseUrl);
+  const wsProtocol = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = new URL(`${wsProtocol}//${httpUrl.host}/ws`);
+  wsUrl.searchParams.set('token', token);
+  wsUrl.searchParams.set('sessionId', sessionId);
+  return wsUrl.toString();
+}
+
 export function useWebSocket(options: UseWebSocketOptions = {}) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [payload, setPayload] = useState<QRPayload | null>(null);
@@ -212,12 +221,15 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     const origin = `${protocol}//${hostname}${port ? ':' + port : ''}`;
     const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
     const wsBase = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
+    const isViteDevServer = port === '9471';
 
     fetch(`${origin}/api/connection`)
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
-        if (data?.token && data?.sessionId) {
-          // 토큰 포함 직접 연결 (relay 경유 안함)
+        if (isViteDevServer && data?.directUrl && data?.token && data?.sessionId) {
+          connectDirect(buildDirectConnectionUrl(data.directUrl, data.token, data.sessionId));
+        } else if (data?.token && data?.sessionId) {
+          // 토큰 포함 직접 연결 (same-origin proxy 포함)
           connectDirect(`${wsBase}?token=${data.token}&sessionId=${data.sessionId}`);
         } else {
           connectDirect(wsBase);
@@ -230,6 +242,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   // 재연결
   const reconnect = useCallback(() => {
+    // same-origin/dev 환경에서는 항상 최신 토큰을 먼저 요청
+    if (window.location.hostname) {
+      connectFromApi();
+      return;
+    }
+
     try {
       const saved = localStorage.getItem('rca_last_connection');
       if (saved) {
@@ -246,10 +264,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       }
     } catch {
       // ignore
-    }
-
-    if (window.location.hostname) {
-      connectFromApi();
     }
   }, [connect, connectDirect, connectFromApi]);
 
@@ -275,6 +289,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       }
     }
 
+    // same-origin/dev 환경에서는 항상 최신 연결 정보 우선
+    if (window.location.hostname) {
+      connectFromApi();
+      return;
+    }
+
     // Check localStorage (이전 연결 복원)
     try {
       const saved = localStorage.getItem('rca_last_connection');
@@ -292,12 +312,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       }
     } catch {
       // ignore
-    }
-
-    // 자동 연결 (same-origin 또는 Vite proxy 경유)
-    if (window.location.hostname) {
-      connectFromApi();
-      return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
