@@ -150,8 +150,8 @@ export class ClaudeAdapter implements AgentAdapter {
       '--verbose',
     ];
 
-    // 모델 설정
-    if (this.config?.model) {
+    // 모델 설정 (default는 Claude Code 자체 기본값 사용)
+    if (this.config?.model && this.config.model !== 'default') {
       args.push('--model', this.config.model);
     }
 
@@ -174,9 +174,10 @@ export class ClaudeAdapter implements AgentAdapter {
     const env = { ...process.env, ...this.config?.env };
     delete env.CLAUDECODE; // 중첩 실행 방지 우회
 
-    // 추론 단계 (effort level)
+    // 추론 단계 (effort level) — Opus/Sonnet만 지원, Haiku는 무시
+    const model = this.config?.model || 'default';
     const effortLevel = (this.config as unknown as Record<string, unknown>)?.effortLevel as string | undefined;
-    if (effortLevel) {
+    if (effortLevel && model !== 'haiku') {
       env.CLAUDE_CODE_EFFORT_LEVEL = effortLevel;
     }
 

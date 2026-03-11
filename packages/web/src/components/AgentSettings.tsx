@@ -9,9 +9,18 @@ interface AgentSettingsProps {
 const AgentSettings = ({ options, values, onChange }: AgentSettingsProps) => {
   if (options.length === 0) return null;
 
+  // visibleWhen 조건 평가
+  const isVisible = (opt: AgentOptionDef) => {
+    if (!opt.visibleWhen) return true;
+    return Object.entries(opt.visibleWhen).every(([depKey, allowed]) => {
+      const current = values[depKey] || options.find((o) => o.key === depKey)?.defaultValue || '';
+      return allowed.includes(current);
+    });
+  };
+
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      {options.map((opt) => (
+      {options.filter(isVisible).map((opt) => (
         <div key={opt.key} className="flex items-center gap-1">
           <span className="text-xs text-[var(--text-muted)]">{opt.label}</span>
           {opt.type === 'select' && opt.options ? (

@@ -288,7 +288,6 @@ export default function App() {
     return (
       <ConnectScreen
         status={ws.status}
-        onConnect={ws.connect}
         onConnectDirect={ws.connectDirect}
       />
     );

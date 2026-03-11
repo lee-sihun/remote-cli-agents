@@ -29,6 +29,8 @@ export interface AgentOptionDef {
   options?: { value: string; label: string }[];
   defaultValue?: string;
   description?: string;
+  /** 다른 옵션 값에 따라 조건부 표시 (key: 허용 값 배열) */
+  visibleWhen?: Record<string, string[]>;
 }
 
 export const CLAUDE_OPTIONS: AgentOptionDef[] = [
@@ -37,12 +39,14 @@ export const CLAUDE_OPTIONS: AgentOptionDef[] = [
     label: 'Model',
     type: 'select',
     options: [
+      { value: 'default', label: 'Default' },
       { value: 'sonnet', label: 'Sonnet' },
       { value: 'opus', label: 'Opus' },
       { value: 'haiku', label: 'Haiku' },
+      { value: 'sonnet[1m]', label: 'Sonnet 1M' },
       { value: 'opusplan', label: 'OpusPlan' },
     ],
-    defaultValue: 'sonnet',
+    defaultValue: 'default',
   },
   {
     key: 'effortLevel',
@@ -54,6 +58,8 @@ export const CLAUDE_OPTIONS: AgentOptionDef[] = [
       { value: 'high', label: 'High' },
     ],
     defaultValue: 'medium',
+    // 노력 수준은 Opus/Sonnet 계열만 지원
+    visibleWhen: { model: ['default', 'sonnet', 'sonnet[1m]', 'opus', 'opusplan'] },
   },
   {
     key: 'permissionMode',
@@ -63,6 +69,7 @@ export const CLAUDE_OPTIONS: AgentOptionDef[] = [
       { value: 'default', label: 'Default' },
       { value: 'acceptEdits', label: 'Auto Edit' },
       { value: 'plan', label: 'Plan' },
+      { value: 'dontAsk', label: "Don't Ask" },
       { value: 'bypassPermissions', label: 'Bypass' },
     ],
     defaultValue: 'default',
