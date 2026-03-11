@@ -263,8 +263,11 @@ export class ClaudeAdapter implements AgentAdapter {
 
     // stdout에서 JSON 이벤트 파싱
     let accumulatedText = '';
+    let accumulatedReasoning = '';
     let currentToolCall: ToolCall | null = null;
     let messageCompleted = false;
+    const collectedToolCalls: ToolCall[] = []; // 완료된 도구 호출 수집 (디스크 저장용)
+    let resultMeta: { model?: string; costUsd?: number; usage?: { inputTokens: number; outputTokens: number } } = {};
 
     if (proc.stdout) {
       const rl = createInterface({ input: proc.stdout });
@@ -302,7 +305,9 @@ export class ClaudeAdapter implements AgentAdapter {
             if (msg?.content) {
               const buf = this.streamingBuffers.get(threadId);
               for (const block of msg.content) {
-                if (block.type === 'text' && block.text) {
+                if (block.type === 'thinking' && block.thinking) {
+                  accumulatedReasoning += block.thinking;
+                } else if (block.type === 'text' && block.text) {
                   accumulatedText += block.text;
                   if (buf) buf.content += block.text;
                   this.emit({
@@ -353,6 +358,7 @@ export class ClaudeAdapter implements AgentAdapter {
                     const idx = buf.toolCalls.findIndex((t) => t.id === currentToolCall!.id);
                     if (idx >= 0) buf.toolCalls[idx] = { ...currentToolCall };
                   }
+                  collectedToolCalls.push({ ...currentToolCall });
                   this.emit({
                     type: 'tool_complete',
                     threadId,
@@ -377,17 +383,23 @@ export class ClaudeAdapter implements AgentAdapter {
               this.status.model = event.model;
             }
 
+            // 메타데이터 수집
+            if (event.cost_usd) resultMeta.costUsd = event.cost_usd;
+            if (event.model) resultMeta.model = event.model;
+
             // 컨텍스트 사용량 계산
             if (event.usage) {
               const inputTokens = (event.usage.input_tokens || 0)
                 + (event.usage.cache_read_input_tokens || 0)
                 + (event.usage.cache_creation_input_tokens || 0);
-              const totalTokens = inputTokens + (event.usage.output_tokens || 0);
-              // 모델별 컨텍스트 윈도우 크기 추정
+              const outputTokens = event.usage.output_tokens || 0;
+              const totalTokens = inputTokens + outputTokens;
+              resultMeta.usage = { inputTokens, outputTokens };
+
               const model = this.status.model || this.config?.model || 'default';
               const contextWindow = model.includes('1m') ? 1_000_000
                 : model.includes('haiku') ? 200_000
-                : 200_000; // Sonnet/Opus 기본값
+                : 200_000;
               const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
               this.status.contextUsage = { used: totalTokens, total: contextWindow, percentage };
             }
@@ -395,14 +407,22 @@ export class ClaudeAdapter implements AgentAdapter {
             // 스트리밍 버퍼 정리
             this.streamingBuffers.delete(threadId);
 
-            // 최종 메시지 생성 (accumulatedText 없으면 result 필드 사용)
+            // 최종 메시지 생성
             messageCompleted = true;
+            if (currentToolCall) {
+              collectedToolCalls.push({ ...currentToolCall, status: 'completed' });
+            }
             const finalText = accumulatedText || (event.result as string) || '';
             const assistantMessage: AgentMessage = {
               id: randomUUID(),
               role: 'assistant',
               content: finalText,
               timestamp: Date.now(),
+              toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
+              reasoning: accumulatedReasoning || undefined,
+              model: resultMeta.model,
+              costUsd: resultMeta.costUsd,
+              usage: resultMeta.usage,
             };
 
             threadInfo.messages.push(assistantMessage);
@@ -458,11 +478,15 @@ export class ClaudeAdapter implements AgentAdapter {
 
       // result 이벤트 없이 종료된 경우 message_complete 보장
       if (!messageCompleted) {
+        if (currentToolCall) {
+          collectedToolCalls.push({ ...currentToolCall, status: 'completed' });
+        }
         const assistantMessage: AgentMessage = {
           id: randomUUID(),
           role: 'assistant',
           content: accumulatedText || (code !== 0 ? `[프로세스 종료: code ${code}]` : '[응답 없음]'),
           timestamp: Date.now(),
+          toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
         };
         threadInfo.messages.push(assistantMessage);
         store.appendMessage(threadId, assistantMessage);

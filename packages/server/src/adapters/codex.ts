@@ -79,6 +79,7 @@ export class CodexAdapter implements AgentAdapter {
   // 현재 진행 중인 응답 텍스트 누적
   private accumulatedText = new Map<string, string>();
   private currentToolCalls = new Map<string, ToolCall>();
+  private collectedToolCalls = new Map<string, ToolCall[]>(); // 완료된 도구 수집
 
   async start(config: AgentConfig): Promise<void> {
     this.config = config;
@@ -347,6 +348,7 @@ export class CodexAdapter implements AgentAdapter {
 
     switch (method) {
       case 'turn/started': {
+        this.collectedToolCalls.set(threadId, []);
         this.updateStatus('running', threadId);
         break;
       }
@@ -387,6 +389,10 @@ export class CodexAdapter implements AgentAdapter {
             toolCall.output = params.toolOutput || params.text || '';
             toolCall.status = 'completed';
 
+            const collected = this.collectedToolCalls.get(threadId) || [];
+            collected.push({ ...toolCall });
+            this.collectedToolCalls.set(threadId, collected);
+
             this.emit({
               type: 'tool_complete',
               threadId,
@@ -417,11 +423,17 @@ export class CodexAdapter implements AgentAdapter {
           this.status.contextUsage = { used: totalTokens, total: contextWindow, percentage };
         }
 
+        const tools = this.collectedToolCalls.get(threadId) || [];
         const assistantMessage: AgentMessage = {
           id: randomUUID(),
           role: 'assistant',
           content: text,
           timestamp: Date.now(),
+          toolCalls: tools.length > 0 ? tools : undefined,
+          usage: params.usage ? {
+            inputTokens: params.usage.input_tokens || 0,
+            outputTokens: params.usage.output_tokens || 0,
+          } : undefined,
         };
 
         if (thread) {
@@ -450,6 +462,7 @@ export class CodexAdapter implements AgentAdapter {
         });
 
         this.accumulatedText.delete(threadId);
+        this.collectedToolCalls.delete(threadId);
         this.updateStatus('idle');
         break;
       }

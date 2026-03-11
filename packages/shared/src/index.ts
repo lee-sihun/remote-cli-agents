@@ -120,6 +120,12 @@ export interface AgentMessage {
   toolCalls?: ToolCall[];
   reasoning?: string;
   timestamp: number;
+  /** 사용 모델 */
+  model?: string;
+  /** API 비용 (USD) */
+  costUsd?: number;
+  /** 토큰 사용량 */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface ToolCall {
