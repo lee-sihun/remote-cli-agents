@@ -2,7 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentType,
@@ -242,8 +242,8 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
   };
 }
 
-export function parseClientMessagePayload(data: string | Buffer): ClientMessageParseResult {
-  const raw = typeof data === 'string' ? data : data.toString();
+export function parseClientMessagePayload(data: RawData): ClientMessageParseResult {
+  const raw = normalizeRawMessage(data);
   if (Buffer.byteLength(raw, 'utf-8') > MAX_WS_MESSAGE_BYTES) {
     return { ok: false, message: 'Message too large' };
   }
@@ -253,6 +253,19 @@ export function parseClientMessagePayload(data: string | Buffer): ClientMessageP
   } catch {
     return { ok: false, message: 'Invalid JSON' };
   }
+}
+
+function normalizeRawMessage(data: RawData): string {
+  if (typeof data === 'string') {
+    return data;
+  }
+  if (Buffer.isBuffer(data)) {
+    return data.toString();
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data.map((chunk) => Buffer.from(chunk))).toString();
+  }
+  return Buffer.from(data).toString();
 }
 
 // 어댑터 초기화 및 설치된 에이전트 감지
