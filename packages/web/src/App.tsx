@@ -112,14 +112,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.status]);
 
-  // Request threads when agent changes
+  // Request threads when agent changes (연결 상태가 유지된 상태에서만)
+  const prevAgentRef = useRef<AgentType | null>(null);
   useEffect(() => {
     if (ws.status === 'connected' && store.activeAgent) {
-      ws.send({ type: 'list_threads', agentType: store.activeAgent });
-      ws.send({
-        type: 'select_agent',
-        agentType: store.activeAgent,
-      });
+      // 에이전트가 실제로 변경되었을 때만 (초기 연결 복원과 중복 방지)
+      if (prevAgentRef.current !== null && prevAgentRef.current !== store.activeAgent) {
+        ws.send({ type: 'list_threads', agentType: store.activeAgent });
+      }
+      prevAgentRef.current = store.activeAgent;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.status, store.activeAgent]);
@@ -234,13 +235,10 @@ export default function App() {
       storeRef.current.setActiveThread(threadId);
       setSidebarOpen(false);
 
-      // 메시지가 없으면 서버에서 로드
-      const existing = storeRef.current.messages.get(threadId);
-      if (!existing || existing.length === 0) {
-        const agent = storeRef.current.activeAgent;
-        if (agent) {
-          wsRef.current.send({ type: 'get_thread_messages', agentType: agent, threadId });
-        }
+      // 전체 스레드 상태 복원 (메시지 + 스트리밍 + 에이전트 상태)
+      const agent = storeRef.current.activeAgent;
+      if (agent) {
+        wsRef.current.send({ type: 'get_thread_state', agentType: agent, threadId });
       }
     },
     [],

@@ -430,10 +430,17 @@ async function handleClientMessage(
         return;
       }
 
-      // 설정 업데이트 후 재시작
+      // 설정 업데이트 (실행 중이면 config만 갱신, 아니면 full restart)
       if (msg.config) {
-        await adapter.stop();
-        await adapter.start(msg.config);
+        const status = adapter.getStatus();
+        if (status.state === 'running') {
+          // 실행 중: config만 갱신 (다음 메시지부터 적용, 프로세스 유지)
+          console.log(`[server] Agent ${msg.agentType} running, config updated for next message`);
+          await adapter.start(msg.config);
+        } else {
+          await adapter.stop();
+          await adapter.start(msg.config);
+        }
       }
 
       const agents = await getAgentsList(adapters);
