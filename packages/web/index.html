@@ -7,6 +7,33 @@
     <meta name="description" content="Remote CLI Agents - Web control for coding agents" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Remote CLI Agents</title>
+  <script>
+    // iOS Safari는 viewport user-scalable=no를 무시하므로 JS로 핀치줌 차단
+    document.addEventListener('gesturestart', function(e) { e.preventDefault(); }, { passive: false });
+    document.addEventListener('touchmove', function(e) {
+      if (e.scale !== undefined && e.scale !== 1) { e.preventDefault(); }
+    }, { passive: false });
+
+    // iOS 키보드 대응: offsetTop + height 모두 추적
+    // - top 변경은 레이아웃 리플로우 유발 → transform: translateY 사용 (GPU 가속)
+    // - resize + scroll 모두 감지 (offsetTop은 scroll 이벤트로 변경됨)
+    // - requestAnimationFrame으로 브라우저 페인트 사이클과 동기화
+    (function() {
+      var vv = window.visualViewport;
+      if (!vv) return;
+      var raf;
+      function update() {
+        if (raf) cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(function() {
+          document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+          document.documentElement.style.setProperty('--vvt', vv.offsetTop + 'px');
+        });
+      }
+      vv.addEventListener('resize', update);
+      vv.addEventListener('scroll', update);
+      update();
+    })();
+  </script>
   </head>
   <body class="bg-slate-900 text-slate-100">
     <div id="root"></div>

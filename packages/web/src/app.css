@@ -80,19 +80,19 @@ body {
 }
 
 #root {
-  height: 100dvh;
-  height: 100%; /* fallback */
+  /* position: fixed + transform: translateY(offsetTop) = 항상 visual viewport 상단에 정렬 */
+  /* top 변경 대신 transform 사용 → GPU 가속, 레이아웃 리플로우 없음 */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--vvh, 100dvh);
+  transform: translateY(var(--vvt, 0px));
+  will-change: transform, height;
   margin: 0;
   padding: 0;
 }
 
-/* iOS PWA standalone 모드 */
-@media (display-mode: standalone) {
-  body {
-    position: fixed;
-    width: 100%;
-  }
-}
 
 /* ─── Scrollbar ─── */
 ::-webkit-scrollbar {

@@ -191,6 +191,7 @@ export default function App() {
         s.setActiveThread(threadId);
       }
 
+      s.upsertThreadFromUserMessage(s.activeAgent, threadId, content);
       s.addUserMessage(threadId, content);
 
       wsRef.current.send({
@@ -316,7 +317,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex overflow-hidden bg-(--bg-primary)" style={{ height: '100dvh' }}>
+    <div className="flex overflow-hidden bg-(--bg-primary)" style={{ height: '100%' }}>
       {/* Sidebar overlay (mobile) */}
       {sidebarOpen && (
         <div
