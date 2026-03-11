@@ -119,6 +119,10 @@ rca --relay wss://your-relay-server.com
 | 통신 | WebSocket (Remodex 패턴) |
 | 빌드 | TypeScript, Vite |
 
+## 한마디
+
+> 코딩은 결국 의자에 앉아 키보드를 두드리는 일이지만, 이 도구가 있으면 소파에 누워서 스마트폰으로도 할 수 있습니다. ☕
+
 ## 라이선스
 
 MIT

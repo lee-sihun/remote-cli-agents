@@ -347,7 +347,7 @@ export class ClaudeAdapter implements AgentAdapter {
     threadId: string,
     message: string,
     runConfig: AgentConfig,
-    sessionId?: string,
+    resumeSessionId?: string,
     cwd?: string,
   ): void {
     const args = [
@@ -366,8 +366,13 @@ export class ClaudeAdapter implements AgentAdapter {
       args.push('--effort', effortLevel);
     }
 
-    if (sessionId) {
-      args.push('--resume', sessionId);
+    const existingThread = this.threads.get(threadId);
+    const threadSessionId = existingThread?.sessionId || resumeSessionId || randomUUID();
+
+    if (resumeSessionId) {
+      args.push('--resume', resumeSessionId);
+    } else {
+      args.push('--session-id', threadSessionId);
     }
 
     // 권한 모드 설정
@@ -411,14 +416,13 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     const now = Date.now();
-    const existingThread = this.threads.get(threadId);
     const runId = randomUUID();
 
     const threadInfo: ThreadInfo = {
       id: threadId,
       process: proc,
       runId,
-      sessionId: existingThread?.sessionId || sessionId,
+      sessionId: threadSessionId,
       model: existingThread?.model,
       title: existingThread?.title || message.slice(0, 50),
       messages: existingThread?.messages || [],

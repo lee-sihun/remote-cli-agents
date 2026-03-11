@@ -115,7 +115,7 @@ describe('ClaudeAdapter', () => {
     expect(proc.stdin.end).toHaveBeenCalledTimes(1);
     expect(childProcessMock.spawn).toHaveBeenCalledWith(
       'claude',
-      expect.any(Array),
+      expect.arrayContaining(['--session-id', expect.any(String), '-p']),
       expect.objectContaining({
         shell: false,
       }),
@@ -148,25 +148,47 @@ describe('ClaudeAdapter', () => {
     );
   });
 
-  it('emits a clear error when runtime approval is requested in print mode', async () => {
+  it('emits approval_required and resolves the pending decision when approved', async () => {
     const proc = createFakeChildProcess();
     proc.pid = 9004;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
-    const errors: string[] = [];
+    const events: AgentEvent[] = [];
     const adapter = new ClaudeAdapter();
     adapter.onEvent((event) => {
-      if (event.type === 'error') {
-        errors.push(event.error);
-      }
+      events.push(event);
     });
 
     await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
     adapter.sendMessage('thread-approval', 'hello');
+    const decisionPromise = adapter.requestPermission(
+      'thread-approval',
+      'Edit',
+      { file_path: 'a.ts' },
+      'tool-1',
+    );
+
+    expect(adapter.getStatus().state).toBe('waiting_approval');
+    expect(events).toContainEqual({
+      type: 'approval_required',
+      threadId: 'thread-approval',
+      agentType: 'claude',
+      tool: {
+        id: 'tool-1',
+        name: 'Edit',
+        input: { file_path: 'a.ts' },
+        status: 'requires_approval',
+      },
+    });
+
     adapter.approve('thread-approval', 'tool-1', true);
 
-    expect(errors).toContain('Claude Code -p 모드는 RCA 런타임 승인 응답을 지원하지 않습니다. permissionMode를 acceptEdits, plan, dontAsk, bypassPermissions 중 하나로 사용하세요.');
+    await expect(decisionPromise).resolves.toEqual({
+      behavior: 'allow',
+      toolUseID: 'tool-1',
+    });
+    expect(adapter.getStatus().state).toBe('running');
   });
 
   it('removes CLAUDECODE from the child environment', async () => {
@@ -1011,5 +1033,91 @@ describe('ClaudeAdapter', () => {
     const spawnArgs = childProcessMock.spawn.mock.calls[0]?.[1] as string[];
     expect(spawnArgs).not.toContain(dangerousPrompt);
     expect(proc.stdin.write).toHaveBeenCalledWith(dangerousPrompt);
+  });
+
+  it('keeps a generated session id so a failed first run can resume on retry', async () => {
+    const firstProc = createFakeChildProcess();
+    const secondProc = createFakeChildProcess();
+    firstProc.pid = 9942;
+    secondProc.pid = 9943;
+    childProcessMock.spawn
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-generated-session', 'first');
+
+    const firstArgs = childProcessMock.spawn.mock.calls[0]?.[1] as string[];
+    const sessionIndex = firstArgs.indexOf('--session-id');
+    expect(sessionIndex).toBeGreaterThanOrEqual(0);
+    const generatedSessionId = firstArgs[sessionIndex + 1];
+    expect(generatedSessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+
+    firstProc.emit('close', 1);
+    await flushStreamEvents();
+
+    adapter.sendMessage('thread-generated-session', 'retry');
+
+    expect(childProcessMock.spawn).toHaveBeenNthCalledWith(
+      2,
+      'claude',
+      expect.arrayContaining(['--resume', generatedSessionId, '-p']),
+      expect.any(Object),
+    );
+  });
+
+  it('wires the permission bridge flags when bridge options are configured', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9951;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter({
+      permissionApiBaseUrl: 'http://127.0.0.1:9470',
+      permissionApiToken: 'secret-token',
+      permissionBridgeScriptPath: 'C:/workspace/packages/server/bin/claude-permission-bridge.mjs',
+    });
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace', permissionMode: 'default' });
+    adapter.sendMessage('thread-bridge', 'hello');
+
+    const spawnArgs = childProcessMock.spawn.mock.calls[0]?.[1] as string[];
+    expect(spawnArgs).toEqual(expect.arrayContaining([
+      '--mcp-config',
+      expect.stringMatching(/rca-claude-permission-.*\.json$/),
+      '--permission-prompt-tool',
+      'mcp__rca-permission__rca_approve_permission',
+      '-p',
+    ]));
+  });
+
+  it('denies pending permission requests if the Claude process exits first', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9952;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-approval-close', 'hello');
+
+    const decisionPromise = adapter.requestPermission(
+      'thread-approval-close',
+      'Bash',
+      { command: 'rm -rf tmp' },
+      'tool-close',
+    );
+
+    proc.emit('close', 1);
+    await flushStreamEvents();
+
+    await expect(decisionPromise).resolves.toEqual({
+      behavior: 'deny',
+      message: 'Claude session ended before the permission request was answered.',
+      toolUseID: 'tool-close',
+    });
   });
 });
