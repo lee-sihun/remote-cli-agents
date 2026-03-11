@@ -1,5 +1,5 @@
-import React, { useCallback, useRef, useState } from 'react';
-import { ArrowUp, Square, Loader2, Zap, ChevronDown } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowUp, Square, Loader2, Zap, ChevronDown, Check } from 'lucide-react';
 import type { AgentOptionDef, ContextUsage } from '../lib/protocol';
 
 // ─── 인라인 셀렉트 (입력창 내부용) ───
@@ -12,25 +12,64 @@ interface InlineSelectProps {
 }
 
 const InlineSelect = ({ icon, options, value, onChange }: InlineSelectProps) => {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const label = options.find((o) => o.value === value)?.label || 'Select';
 
+  // 외부 클릭 시 닫기
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
   return (
-    <label className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-(--bg-tertiary) transition-colors cursor-pointer text-xs text-(--text-muted) relative">
-      {icon}
-      <span>{label}</span>
-      <ChevronDown size={10} />
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="absolute inset-0 opacity-0 cursor-pointer"
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1 px-2 py-1 rounded-lg transition-colors cursor-pointer text-xs ${
+          open
+            ? 'bg-(--bg-tertiary) text-(--text-secondary)'
+            : 'text-(--text-muted) hover:bg-(--bg-tertiary)'
+        }`}
       >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </label>
+        {icon}
+        <span>{label}</span>
+        <ChevronDown
+          size={10}
+          className={`transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 min-w-[140px] rounded-xl bg-(--bg-secondary) border border-(--border) shadow-lg z-50 animate-fade-in overflow-hidden">
+          {options.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+              className={`flex items-center justify-between w-full px-3 py-2 text-xs text-left transition-colors ${
+                o.value === value
+                  ? 'text-(--accent) bg-(--bg-tertiary)/50'
+                  : 'text-(--text-secondary) hover:bg-(--bg-tertiary)/50 hover:text-(--text-primary)'
+              }`}
+            >
+              <span>{o.label}</span>
+              {o.value === value && <Check size={10} className="text-(--accent) shrink-0 ml-2" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 
