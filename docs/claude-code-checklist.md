@@ -50,7 +50,7 @@
 - [x] `tool_use` → `tool_result` 순서가 현재 CLI 스모크 범위에서 보장되는지
 - [x] `tool_result.tool_use_id`가 항상 존재하는지 (fallback으로 `lastToolCallId` 사용 중)
 - [x] 다중 tool_use가 한 `assistant` 이벤트에 올 수 있는지
-- [ ] `tool_result` 없이 다음 `assistant`가 오는 경우 (도구 실행 실패 시)
+- [x] `tool_result` 없이 다음 `assistant`가 오는 경우 (도구 실행 실패 시)
 - [x] `pendingToolCalls` Map에 남은 채 result 이벤트가 오면 status가 'completed'로 처리되는지
 
 ---
@@ -93,7 +93,7 @@
 
 ### 5-1. stderr 처리
 - [ ] Claude Code stderr 출력이 항상 에러인지 (info/warning 수준 출력도 있을 수 있음)
-- [ ] stderr 청크가 분할되어 올 때 불완전한 에러 메시지가 클라이언트에 전달되는지
+- [x] stderr 청크가 분할되어 올 때 불완전한 에러 메시지가 클라이언트에 전달되지 않는지
 - [x] stderr → error 이벤트와 close → error 이벤트 중복 방지 (`stderrEmitted` 플래그)
 
 ### 5-2. 프로세스 에러
