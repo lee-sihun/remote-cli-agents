@@ -112,12 +112,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.status]);
 
-  // Request threads when agent changes (연결 상태가 유지된 상태에서만)
-  const prevAgentRef = useRef<AgentType | null>(null);
+  // Request threads when agent changes
+  const prevAgentRef = useRef<AgentType | null>(store.activeAgent);
   useEffect(() => {
     if (ws.status === 'connected' && store.activeAgent) {
-      // 에이전트가 실제로 변경되었을 때만 (초기 연결 복원과 중복 방지)
-      if (prevAgentRef.current !== null && prevAgentRef.current !== store.activeAgent) {
+      // 에이전트가 변경되었을 때만 (동일 에이전트 중복 요청 방지)
+      if (prevAgentRef.current !== store.activeAgent) {
         ws.send({ type: 'list_threads', agentType: store.activeAgent });
       }
       prevAgentRef.current = store.activeAgent;

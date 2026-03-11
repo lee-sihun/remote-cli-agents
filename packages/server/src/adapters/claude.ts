@@ -435,10 +435,11 @@ export class ClaudeAdapter implements AgentAdapter {
             if (event.model) resultMeta.model = event.model;
 
             // 컨텍스트 사용량 계산 (스레드별 저장)
+            // input_tokens = 새 입력, cache_read = 캐시에서 읽은 입력
+            // cache_creation은 input_tokens의 부분집합이므로 중복 추가하지 않음
             if (event.usage) {
               const inputTokens = (event.usage.input_tokens || 0)
-                + (event.usage.cache_read_input_tokens || 0)
-                + (event.usage.cache_creation_input_tokens || 0);
+                + (event.usage.cache_read_input_tokens || 0);
               const outputTokens = event.usage.output_tokens || 0;
               const totalTokens = inputTokens + outputTokens;
               resultMeta.usage = { inputTokens, outputTokens };

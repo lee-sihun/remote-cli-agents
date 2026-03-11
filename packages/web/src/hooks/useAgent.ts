@@ -137,6 +137,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         if (!state.activeAgent && msg.agents.length > 0) {
           const available = msg.agents.find((a) => a.available);
           if (available) {
+            // setActiveAgent로 localStorage에도 저장
+            saveTo('rca_active_agent', available.type);
             set({ activeAgent: available.type });
           }
         }
