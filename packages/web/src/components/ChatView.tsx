@@ -33,6 +33,7 @@ function ToolCallCard({ tool }: { tool: ToolCall }) {
     running: <Loader2 size={12} className="text-(--warning) animate-spin" />,
     completed: <Check size={12} className="text-(--success)" />,
     failed: <X size={12} className="text-(--error)" />,
+    abandoned: <AlertCircle size={12} className="text-(--text-muted)" />,
     requires_approval: (
       <AlertCircle size={12} className="text-(--warning)" />
     ),
@@ -43,6 +44,7 @@ function ToolCallCard({ tool }: { tool: ToolCall }) {
     running: 'Running...',
     completed: 'Done',
     failed: 'Failed',
+    abandoned: 'Abandoned',
     requires_approval: 'Needs approval',
   };
 

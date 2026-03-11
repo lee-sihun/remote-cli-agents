@@ -157,10 +157,12 @@ export default function App() {
   const isRunning = agentStatus?.state === 'running'
     && agentStatus?.activeThread === store.activeThread;
 
-  // 컨텍스트 사용량: agentStatus 우선, 없으면 스레드 저장값 fallback
   const activeThreadSummary = store.activeAgent && store.activeThread
     ? store.threads.get(store.activeAgent)?.find((t) => t.id === store.activeThread)
     : undefined;
+  const activeModel = activeThreadSummary?.model || agentStatus?.model;
+
+  // 컨텍스트 사용량: 실행 중 활성 스레드면 agentStatus, 아니면 스레드 저장값
   const contextUsage = agentStatus?.contextUsage || activeThreadSummary?.contextUsage;
 
   // Current thread approvals
@@ -389,9 +391,9 @@ export default function App() {
                     ?.name || store.activeAgent}
                 </span>
               )}
-              {agentStatus?.model && (
+              {activeModel && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-(--bg-tertiary) text-(--text-muted)">
-                  {agentStatus.model}
+                  {activeModel}
                 </span>
               )}
             </div>

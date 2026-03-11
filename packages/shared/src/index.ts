@@ -18,6 +18,7 @@ export interface AgentConfig {
   env?: Record<string, string>;
   permissionMode?: string;
   model?: string;
+  effortLevel?: string;
 }
 
 // ─── 에이전트별 설정 옵션 정의 ───
@@ -133,7 +134,7 @@ export interface ToolCall {
   name: string;
   input: Record<string, unknown>;
   output?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'requires_approval';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'requires_approval' | 'abandoned';
 }
 
 // ─── Context Usage ───
@@ -156,10 +157,14 @@ export interface ThreadSummary {
   createdAt: number;
   updatedAt: number;
   cwd?: string;
+  /** 마지막 응답 모델 */
+  model?: string;
   /** 마지막 컨텍스트 사용량 (디스크 저장) */
   contextUsage?: ContextUsage;
   /** Claude Code 세션 ID (--resume용, 디스크 저장) */
   sessionId?: string;
+  /** 스레드별 실행 설정 스냅샷 */
+  config?: AgentConfig;
 }
 
 // ─── Agent Status ───

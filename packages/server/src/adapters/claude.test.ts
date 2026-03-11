@@ -110,6 +110,13 @@ describe('ClaudeAdapter', () => {
 
     expect(proc.stdin.write).toHaveBeenCalledWith('hello claude');
     expect(proc.stdin.end).toHaveBeenCalledTimes(1);
+    expect(childProcessMock.spawn).toHaveBeenCalledWith(
+      'claude',
+      expect.any(Array),
+      expect.objectContaining({
+        shell: false,
+      }),
+    );
   });
 
   it('passes effort level through the official CLI flag', async () => {
@@ -136,6 +143,27 @@ describe('ClaudeAdapter', () => {
         }),
       }),
     );
+  });
+
+  it('emits a clear error when runtime approval is requested in print mode', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9004;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const errors: string[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      if (event.type === 'error') {
+        errors.push(event.error);
+      }
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-approval', 'hello');
+    adapter.approve('thread-approval', 'tool-1', true);
+
+    expect(errors).toContain('Claude Code -p 모드는 RCA 런타임 승인 응답을 지원하지 않습니다. permissionMode를 acceptEdits, plan, dontAsk, bypassPermissions 중 하나로 사용하세요.');
   });
 
   it('removes CLAUDECODE from the child environment', async () => {
@@ -230,6 +258,61 @@ describe('ClaudeAdapter', () => {
     await flushStreamEvents();
 
     expect(adapter.getStatus().state).toBe('idle');
+  });
+
+  it('keeps status model and context usage aligned with the active thread', async () => {
+    const firstProc = createFakeChildProcess();
+    const secondProc = createFakeChildProcess();
+    firstProc.pid = 9251;
+    secondProc.pid = 9252;
+    childProcessMock.spawn
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-a', 'first');
+    adapter.sendMessage('thread-b', 'second');
+
+    firstProc.stdout.write(`${JSON.stringify({
+      type: 'result',
+      result: 'first done',
+      model: 'claude-sonnet',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+      },
+    })}\n`);
+    secondProc.stdout.write(`${JSON.stringify({
+      type: 'result',
+      result: 'second done',
+      model: 'claude-opus',
+      usage: {
+        input_tokens: 20,
+        output_tokens: 10,
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    expect(adapter.getStatus().activeThread).toBe('thread-b');
+    expect(adapter.getStatus().model).toBe('claude-opus');
+    expect(adapter.getStatus().contextUsage).toEqual({
+      used: 30,
+      total: 200_000,
+      percentage: 0,
+    });
+
+    secondProc.emit('close', 0);
+    await flushStreamEvents();
+
+    expect(adapter.getStatus().activeThread).toBe('thread-a');
+    expect(adapter.getStatus().model).toBe('claude-sonnet');
+    expect(adapter.getStatus().contextUsage).toEqual({
+      used: 15,
+      total: 200_000,
+      percentage: 0,
+    });
   });
 
   it('parses assistant, tool and result events and stores session/context metadata', async () => {
@@ -417,11 +500,19 @@ describe('ClaudeAdapter', () => {
       createdAt: 1,
       updatedAt: 2,
       cwd: 'C:/saved-workspace',
+      model: 'claude-sonnet',
       sessionId: 'saved-session',
       contextUsage: {
         used: 200,
         total: 200_000,
         percentage: 0,
+      },
+      config: {
+        type: 'claude',
+        cwd: 'C:/saved-workspace',
+        model: 'sonnet',
+        permissionMode: 'plan',
+        effortLevel: 'high',
       },
     }]);
     storeState.messages.set('thread-restored', [{
@@ -442,15 +533,57 @@ describe('ClaudeAdapter', () => {
     const threads = await adapter.getThreads();
     expect(threads[0]?.sessionId).toBe('saved-session');
     expect(threads[0]?.contextUsage?.used).toBe(200);
+    expect(threads[0]?.model).toBe('claude-sonnet');
+    expect(threads[0]?.config?.model).toBe('sonnet');
 
     adapter.sendMessage('thread-restored', 'continue');
 
     expect(childProcessMock.spawn).toHaveBeenCalledWith(
       'claude',
-      expect.arrayContaining(['--resume', 'saved-session', '-p']),
+      expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '--permission-mode', 'plan', '--resume', 'saved-session', '-p']),
       expect.objectContaining({
         cwd: 'C:/saved-workspace',
       }),
+    );
+  });
+
+  it('keeps each thread configuration snapshot when the global config changes later', async () => {
+    const firstProc = createFakeChildProcess();
+    const secondProc = createFakeChildProcess();
+    firstProc.pid = 9651;
+    secondProc.pid = 9652;
+    childProcessMock.spawn
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({
+      type: 'claude',
+      cwd: 'C:/workspace',
+      model: 'sonnet',
+      permissionMode: 'plan',
+      effortLevel: 'high',
+    });
+    adapter.sendMessage('thread-config', 'first');
+
+    firstProc.emit('close', 0);
+    await flushStreamEvents();
+
+    await adapter.start({
+      type: 'claude',
+      cwd: 'C:/workspace',
+      model: 'opus',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'medium',
+    });
+    adapter.sendMessage('thread-config', 'second');
+
+    expect(childProcessMock.spawn).toHaveBeenNthCalledWith(
+      2,
+      'claude',
+      expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '--permission-mode', 'plan', '-p']),
+      expect.any(Object),
     );
   });
 
@@ -661,13 +794,13 @@ describe('ClaudeAdapter', () => {
         id: 'tool-1',
         name: 'read_file',
         input: { path: 'a.ts' },
-        status: 'completed',
+        status: 'abandoned',
       },
       {
         id: 'tool-2',
         name: 'read_file',
         input: { path: 'b.ts' },
-        status: 'completed',
+        status: 'abandoned',
       },
     ]);
   });
@@ -715,7 +848,7 @@ describe('ClaudeAdapter', () => {
       : null).toBe('continuing after tool');
     expect(completed && completed.type === 'message_complete'
       ? completed.message.toolCalls?.[0]?.status
-      : null).toBe('completed');
+      : null).toBe('abandoned');
   });
 
   it('falls back to the latest tool call id when tool_result omits tool_use_id', async () => {

@@ -47,6 +47,7 @@ interface ThreadInfo {
   process: ChildProcess;
   runId?: string;
   sessionId?: string;
+  model?: string;
   title: string;
   messages: AgentMessage[];
   createdAt: number;
@@ -54,6 +55,7 @@ interface ThreadInfo {
   cwd?: string;
   timeout?: ReturnType<typeof setTimeout>;
   contextUsage?: ContextUsage;
+  config?: AgentConfig;
 }
 
 export class ClaudeAdapter implements AgentAdapter {
@@ -81,12 +83,14 @@ export class ClaudeAdapter implements AgentAdapter {
           id: t.id,
           process: null as unknown as ChildProcess,
           sessionId: t.sessionId,
+          model: t.model,
           title: t.title,
           messages: store.loadMessages(t.id),
           createdAt: t.createdAt,
           updatedAt: t.updatedAt,
           cwd: t.cwd,
           contextUsage: t.contextUsage,
+          config: t.config,
         });
       }
     }
@@ -127,13 +131,18 @@ export class ClaudeAdapter implements AgentAdapter {
     if (existingThread?.contextUsage) {
       this.status.contextUsage = existingThread.contextUsage;
     }
+    if (existingThread?.model) {
+      this.status.model = existingThread.model;
+    }
+
+    const threadConfig = this.resolveThreadConfig(existingThread);
 
     if (existingThread?.sessionId) {
       console.log(`[claude] Resuming session ${existingThread.sessionId} for thread ${tid}`);
-      this.spawnClaude(tid, message, existingThread.sessionId, existingThread.cwd);
+      this.spawnClaude(tid, message, threadConfig, existingThread.sessionId, existingThread.cwd);
     } else {
       console.log(`[claude] Starting new session for thread ${tid}`);
-      this.spawnClaude(tid, message, undefined, this.config?.cwd);
+      this.spawnClaude(tid, message, threadConfig, undefined, threadConfig.cwd);
     }
   }
 
@@ -147,14 +156,13 @@ export class ClaudeAdapter implements AgentAdapter {
   approve(threadId: string, _toolCallId: string, approved: boolean): void {
     const thread = this.threads.get(threadId);
     if (!thread || !this.isProcessActive(thread.process)) return;
-
-    // Claude Code stdin으로 승인/거부 응답 전달
-    const response = approved ? 'y\n' : 'n\n';
-    try {
-      thread.process.stdin?.write(response);
-    } catch {
-      console.error(`[claude] Failed to write approval for thread ${threadId}`);
-    }
+    void approved;
+    this.emit({
+      type: 'error',
+      threadId,
+      agentType: 'claude',
+      error: 'Claude Code -p 모드는 RCA 런타임 승인 응답을 지원하지 않습니다. permissionMode를 acceptEdits, plan, dontAsk, bypassPermissions 중 하나로 사용하세요.',
+    });
   }
 
   onEvent(handler: AgentEventHandler): void {
@@ -181,8 +189,10 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       cwd: t.cwd,
+      model: t.model,
       sessionId: t.sessionId,
       contextUsage: t.contextUsage,
+      config: t.config,
     }));
   }
 
@@ -190,6 +200,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private spawnClaude(
     threadId: string,
     message: string,
+    runConfig: AgentConfig,
     sessionId?: string,
     cwd?: string,
   ): void {
@@ -199,11 +210,11 @@ export class ClaudeAdapter implements AgentAdapter {
     ];
 
     // 모델 설정 (default는 Claude Code 자체 기본값 사용)
-    if (this.config?.model && this.config.model !== 'default') {
-      args.push('--model', this.config.model);
+    if (runConfig.model && runConfig.model !== 'default') {
+      args.push('--model', runConfig.model);
     }
 
-    const effortLevel = (this.config as unknown as Record<string, unknown>)?.effortLevel as string | undefined;
+    const effortLevel = runConfig.effortLevel;
     if (effortLevel) {
       args.push('--effort', effortLevel);
     }
@@ -213,7 +224,7 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     // 권한 모드 설정
-    const perm = this.config?.permissionMode;
+    const perm = runConfig.permissionMode;
     if (perm === 'bypassPermissions') {
       args.push('--dangerously-skip-permissions');
     } else if (perm && perm !== 'default') {
@@ -224,14 +235,14 @@ export class ClaudeAdapter implements AgentAdapter {
     args.push('-p');
 
     // 환경변수 설정
-    const env = { ...process.env, ...this.config?.env };
+    const env = { ...process.env, ...runConfig.env };
     delete env.CLAUDECODE; // 중첩 실행 방지 우회
 
     const proc = spawn('claude', args, {
-      cwd: cwd || this.config?.cwd || process.cwd(),
+      cwd: cwd || runConfig.cwd || process.cwd(),
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      shell: false,
     });
 
     // stdin으로 프롬프트 전달 후 닫기 (cmd.exe 특수문자/길이 제한 방지)
@@ -249,12 +260,14 @@ export class ClaudeAdapter implements AgentAdapter {
       process: proc,
       runId,
       sessionId: existingThread?.sessionId || sessionId,
+      model: existingThread?.model,
       title: existingThread?.title || message.slice(0, 50),
       messages: existingThread?.messages || [],
       createdAt: existingThread?.createdAt || now,
       updatedAt: now,
-      cwd,
+      cwd: cwd || runConfig.cwd,
       contextUsage: existingThread?.contextUsage,
+      config: runConfig,
     };
 
     // 사용자 메시지 추가 + 저장
@@ -278,7 +291,7 @@ export class ClaudeAdapter implements AgentAdapter {
     threadInfo.timeout = processTimeout;
     this.threads.set(threadId, threadInfo);
     this.saveThreadMeta(threadInfo);
-    this.updateStatus('running', threadId);
+    this.updateStatus('running', threadId, threadInfo);
 
     // 스트리밍 버퍼 초기화
     this.streamingBuffers.set(threadId, { content: '', toolCalls: [] });
@@ -325,7 +338,10 @@ export class ClaudeAdapter implements AgentAdapter {
                 threadInfo.sessionId = event.session_id;
               }
               if (event.model) {
-                this.status.model = event.model;
+                threadInfo.model = event.model;
+                if (this.status.activeThread === threadId) {
+                  this.status.model = event.model;
+                }
               }
               this.saveThreadMeta(threadInfo);
             }
@@ -430,7 +446,10 @@ export class ClaudeAdapter implements AgentAdapter {
             }
 
             if (event.model) {
-              this.status.model = event.model;
+              threadInfo.model = event.model;
+              if (this.status.activeThread === threadId) {
+                this.status.model = event.model;
+              }
             }
 
             // 메타데이터 수집
@@ -458,7 +477,9 @@ export class ClaudeAdapter implements AgentAdapter {
               const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
               const usage: ContextUsage = { used: totalTokens, total: contextWindow, percentage };
               threadInfo.contextUsage = usage;
-              this.status.contextUsage = usage;
+              if (this.status.activeThread === threadId) {
+                this.status.contextUsage = usage;
+              }
             }
 
             // 스트리밍 버퍼 정리
@@ -468,7 +489,7 @@ export class ClaudeAdapter implements AgentAdapter {
             messageCompleted = true;
             // 미완료 tool call이 남아있으면 수집
             for (const [, tc] of pendingToolCalls) {
-              collectedToolCalls.push({ ...tc, status: 'completed' });
+              collectedToolCalls.push({ ...tc, status: 'abandoned' });
             }
             pendingToolCalls.clear();
             const finalText = accumulatedText || (event.result as string) || '';
@@ -568,7 +589,7 @@ export class ClaudeAdapter implements AgentAdapter {
       // result 이벤트 없이 종료된 경우 message_complete 보장
       if (!messageCompleted) {
         for (const [, tc] of pendingToolCalls) {
-          collectedToolCalls.push({ ...tc, status: 'completed' });
+          collectedToolCalls.push({ ...tc, status: 'abandoned' });
         }
         pendingToolCalls.clear();
         const assistantMessage: AgentMessage = {
@@ -592,7 +613,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
       const nextActiveThread = Array.from(this.threads.values()).find((t) => this.isProcessActive(t.process));
       if (nextActiveThread) {
-        this.updateStatus('running', nextActiveThread.id);
+        this.updateStatus('running', nextActiveThread.id, nextActiveThread);
       } else {
         this.updateStatus('idle');
       }
@@ -611,7 +632,7 @@ export class ClaudeAdapter implements AgentAdapter {
         agentType: 'claude',
         error: `Failed to spawn claude: ${err.message}`,
       });
-      this.updateStatus('error');
+      this.updateStatus('error', threadId, threadInfo);
     });
   }
 
@@ -628,8 +649,10 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
       cwd: thread.cwd,
+      model: thread.model,
       sessionId: thread.sessionId,
       contextUsage: thread.contextUsage,
+      config: thread.config,
     });
   }
 
@@ -676,9 +699,26 @@ export class ClaudeAdapter implements AgentAdapter {
     return undefined;
   }
 
-  private updateStatus(state: AgentStatus['state'], activeThread?: string): void {
+  private resolveThreadConfig(existingThread?: ThreadInfo): AgentConfig {
+    const baseConfig = existingThread?.config || this.config || { type: 'claude' as const };
+    return {
+      ...baseConfig,
+      type: 'claude',
+      cwd: existingThread?.cwd || baseConfig.cwd || this.config?.cwd,
+      env: baseConfig.env ? { ...baseConfig.env } : undefined,
+    };
+  }
+
+  private updateStatus(state: AgentStatus['state'], activeThread?: string, threadInfo?: ThreadInfo): void {
     this.status.state = state;
     this.status.activeThread = activeThread;
+    if (threadInfo) {
+      this.status.model = threadInfo.model;
+      this.status.contextUsage = threadInfo.contextUsage;
+    } else if (!activeThread) {
+      this.status.model = undefined;
+      this.status.contextUsage = undefined;
+    }
 
     this.emit({
       type: 'status_change',
