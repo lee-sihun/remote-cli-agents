@@ -33,9 +33,7 @@ const storeState = vi.hoisted<StoreState>(() => ({
   threads: new Map(),
 }));
 
-vi.mock('node:child_process', () => childProcessMock);
-
-vi.mock('../store.js', () => ({
+const storeMock = vi.hoisted(() => ({
   appendMessage: vi.fn((threadId: string, message: AgentMessage) => {
     const messages = storeState.messages.get(threadId) || [];
     storeState.messages.set(threadId, [...messages, message]);
@@ -54,6 +52,10 @@ vi.mock('../store.js', () => ({
     storeState.threads.set(agentType, nextThreads);
   }),
 }));
+
+vi.mock('node:child_process', () => childProcessMock);
+
+vi.mock('../store.js', () => storeMock);
 
 const createFakeChildProcess = (): FakeChildProcess => {
   const proc = new EventEmitter() as FakeChildProcess;
@@ -125,8 +127,36 @@ describe('ClaudeAdapter', () => {
     expect(childProcessMock.spawn).toHaveBeenCalledWith(
       'claude',
       expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '-p']),
-      expect.any(Object),
+      expect.objectContaining({
+        env: expect.not.objectContaining({
+          CLAUDECODE: expect.anything(),
+        }),
+      }),
     );
+  });
+
+  it('removes CLAUDECODE from the child environment', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    process.env.CLAUDECODE = 'nested';
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-env', 'hello');
+
+    expect(childProcessMock.spawn).toHaveBeenCalledWith(
+      'claude',
+      expect.any(Array),
+      expect.objectContaining({
+        env: expect.not.objectContaining({
+          CLAUDECODE: expect.anything(),
+        }),
+      }),
+    );
+
+    delete process.env.CLAUDECODE;
   });
 
   it('kills the previous process and ignores its late close event on same thread', async () => {
@@ -160,6 +190,34 @@ describe('ClaudeAdapter', () => {
 
     const completeEvents = events.filter((event) => event.type === 'message_complete');
     expect(completeEvents).toHaveLength(0);
+  });
+
+  it('keeps running state until all active threads finish and tracks the last active thread', async () => {
+    const firstProc = createFakeChildProcess();
+    const secondProc = createFakeChildProcess();
+    childProcessMock.spawn
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(secondProc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-a', 'first');
+    adapter.sendMessage('thread-b', 'second');
+
+    expect(adapter.getStatus().state).toBe('running');
+    expect(adapter.getStatus().activeThread).toBe('thread-b');
+
+    secondProc.emit('close', 0);
+    await flushStreamEvents();
+
+    expect(adapter.getStatus().state).toBe('running');
+    expect(adapter.getStatus().activeThread).toBe('thread-a');
+
+    firstProc.emit('close', 0);
+    await flushStreamEvents();
+
+    expect(adapter.getStatus().state).toBe('idle');
   });
 
   it('parses assistant, tool and result events and stores session/context metadata', async () => {
@@ -294,6 +352,45 @@ describe('ClaudeAdapter', () => {
     );
   });
 
+  it('persists thread metadata on start and after result completion', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-save-meta', 'hello');
+
+    expect(storeMock.saveThread).toHaveBeenCalledTimes(1);
+    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
+      id: 'thread-save-meta',
+      messageCount: 1,
+    }));
+    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-save-meta', expect.objectContaining({
+      role: 'user',
+      content: 'hello',
+    }));
+
+    proc.stdout.write(`${JSON.stringify({
+      type: 'result',
+      result: 'done',
+      session_id: 'saved-session',
+    })}\n`);
+    await flushStreamEvents();
+
+    expect(storeMock.saveThread).toHaveBeenCalledTimes(2);
+    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
+      id: 'thread-save-meta',
+      sessionId: 'saved-session',
+      messageCount: 2,
+      lastMessage: 'done',
+    }));
+    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-save-meta', expect.objectContaining({
+      role: 'assistant',
+      content: 'done',
+    }));
+  });
+
   it('restores saved threads on start and resumes with persisted session id', async () => {
     storeState.threads.set('claude', [{
       id: 'thread-restored',
@@ -415,6 +512,103 @@ describe('ClaudeAdapter', () => {
 
     const completed = events.find((event) => event.type === 'message_complete');
     expect(completed && completed.type === 'message_complete' ? completed.message.content : null).toBe('partial');
+    expect(storeMock.saveThread).toHaveBeenCalledTimes(2);
+    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
+      id: 'thread-close',
+      messageCount: 2,
+      lastMessage: 'partial',
+    }));
+    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-close', expect.objectContaining({
+      role: 'assistant',
+      content: 'partial',
+    }));
+  });
+
+  it('completes pending tool calls from result even when tool_result is missing', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-pending-tool', 'hello');
+
+    proc.stdout.write(`${JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: 'a.ts' } },
+          { type: 'tool_use', id: 'tool-2', name: 'read_file', input: { path: 'b.ts' } },
+        ],
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      type: 'result',
+      result: 'done',
+    })}\n`);
+    await flushStreamEvents();
+
+    const completed = events.find((event) => event.type === 'message_complete');
+    expect(completed && completed.type === 'message_complete' ? completed.message.toolCalls : []).toEqual([
+      {
+        id: 'tool-1',
+        name: 'read_file',
+        input: { path: 'a.ts' },
+        status: 'completed',
+      },
+      {
+        id: 'tool-2',
+        name: 'read_file',
+        input: { path: 'b.ts' },
+        status: 'completed',
+      },
+    ]);
+  });
+
+  it('falls back to the latest tool call id when tool_result omits tool_use_id', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-tool-fallback', 'hello');
+
+    proc.stdout.write(`${JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: 'a.ts' } },
+        ],
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', content: 'done', is_error: false },
+        ],
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      type: 'result',
+      result: 'done',
+    })}\n`);
+    await flushStreamEvents();
+
+    const toolComplete = events.find((event) => event.type === 'tool_complete');
+    expect(toolComplete && toolComplete.type === 'tool_complete' ? toolComplete.tool.id : null).toBe('tool-1');
+    expect(toolComplete && toolComplete.type === 'tool_complete' ? toolComplete.tool.output : null).toBe('done');
   });
 
   it('logs handler errors without breaking remaining event delivery', async () => {
