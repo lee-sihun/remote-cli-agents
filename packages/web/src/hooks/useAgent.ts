@@ -67,6 +67,14 @@ function saveTo(key: string, value: unknown): void {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
 }
 
+function dedupeToolCalls(toolCalls: ToolCall[]): ToolCall[] {
+  const merged = new Map<string, ToolCall>();
+  for (const toolCall of toolCalls) {
+    merged.set(toolCall.id, toolCall);
+  }
+  return Array.from(merged.values());
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   connectionStatus: 'disconnected',
 
@@ -166,17 +174,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         const updates: Partial<AgentState> = { messages };
 
         // 스트리밍 상태 복원
+        const sc = new Map(state.streamingContent);
+        const atc = new Map(state.activeToolCalls);
         if (msg.streaming) {
-          const sc = new Map(state.streamingContent);
           sc.set(msg.threadId, msg.streaming.content);
-          updates.streamingContent = sc;
 
           if (msg.streaming.toolCalls.length > 0) {
-            const atc = new Map(state.activeToolCalls);
             atc.set(msg.threadId, msg.streaming.toolCalls);
-            updates.activeToolCalls = atc;
+          } else {
+            atc.delete(msg.threadId);
           }
+        } else {
+          sc.delete(msg.threadId);
+          atc.delete(msg.threadId);
         }
+        updates.streamingContent = sc;
+        updates.activeToolCalls = atc;
 
         // 에이전트 상태 복원
         if (msg.agentStatus) {
@@ -199,7 +212,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             sc.set(event.threadId, '');
             const atc = new Map(state.activeToolCalls);
             atc.delete(event.threadId);
-            set({ streamingContent: sc, activeToolCalls: atc });
+            const pendingApprovals = state.pendingApprovals.filter(
+              (approval) => approval.threadId !== event.threadId,
+            );
+            set({ streamingContent: sc, activeToolCalls: atc, pendingApprovals });
             break;
           }
 
@@ -216,12 +232,25 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             // 스트리밍 중 tool calls를 메시지에 첨부
             const pendingTools = state.activeToolCalls.get(event.threadId) || [];
             const completeMessage = pendingTools.length > 0
-              ? { ...event.message, toolCalls: [...(event.message.toolCalls || []), ...pendingTools] }
+              ? {
+                ...event.message,
+                toolCalls: dedupeToolCalls([
+                  ...pendingTools,
+                  ...(event.message.toolCalls || []),
+                ]),
+              }
               : event.message;
 
             const messages = new Map(state.messages);
             const existing = messages.get(event.threadId) || [];
-            messages.set(event.threadId, [...existing, completeMessage]);
+            const existingIndex = existing.findIndex((message) => message.id === completeMessage.id);
+            if (existingIndex >= 0) {
+              const updated = [...existing];
+              updated[existingIndex] = completeMessage;
+              messages.set(event.threadId, updated);
+            } else {
+              messages.set(event.threadId, [...existing, completeMessage]);
+            }
 
             const sc = new Map(state.streamingContent);
             sc.delete(event.threadId);
@@ -261,7 +290,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             const atc = new Map(state.activeToolCalls);
             atc.delete(event.threadId);
 
-            set({ messages, streamingContent: sc, threads, activeToolCalls: atc });
+            const pendingApprovals = state.pendingApprovals.filter(
+              (approval) => approval.threadId !== event.threadId,
+            );
+
+            set({
+              messages,
+              streamingContent: sc,
+              threads,
+              activeToolCalls: atc,
+              pendingApprovals,
+            });
             break;
           }
 
@@ -293,14 +332,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           }
 
           case 'approval_required': {
-            const pendingApprovals = [
-              ...state.pendingApprovals,
-              {
-                ...event.tool,
-                threadId: event.threadId,
-                agentType: event.agentType,
-              },
-            ];
+            const nextApproval = {
+              ...event.tool,
+              threadId: event.threadId,
+              agentType: event.agentType,
+            };
+            const pendingApprovals = state.pendingApprovals.filter(
+              (approval) => approval.id !== nextApproval.id,
+            );
+            pendingApprovals.push(nextApproval);
             set({ pendingApprovals });
             break;
           }
@@ -345,6 +385,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         if (newStatus === 'connected') {
           updates.agentStatuses = new Map();
           updates.streamingContent = new Map();
+          updates.activeToolCalls = new Map();
           updates.pendingApprovals = [];
         }
 
