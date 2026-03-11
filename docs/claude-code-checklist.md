@@ -15,7 +15,7 @@
 
 ### 1-1. stdin 관리
 - [x] `-p` 모드에서 `proc.stdin.write(message)` → `proc.stdin.end()` 호출
-- [ ] stdin 닫힌 상태에서 `approve()` 호출 시 stdin.write 가능한지 확인
+- [x] 현재 RCA의 Claude 어댑터는 `-p` 모드 런타임 승인 응답을 지원하지 않음을 명시적으로 에러 처리
 - [x] `--resume` 세션에서 stdin end 후 프로세스가 정상 동작하는지 확인
 - [x] 매우 긴 프롬프트 (수만 자) stdin 전달 시 버퍼 오버플로 가능성
 
@@ -51,7 +51,7 @@
 - [x] `tool_result.tool_use_id`가 항상 존재하는지 (fallback으로 `lastToolCallId` 사용 중)
 - [x] 다중 tool_use가 한 `assistant` 이벤트에 올 수 있는지
 - [x] `tool_result` 없이 다음 `assistant`가 오는 경우 (도구 실행 실패 시)
-- [x] `pendingToolCalls` Map에 남은 채 result 이벤트가 오면 status가 'completed'로 처리되는지
+- [x] `pendingToolCalls` Map에 남은 채 result 이벤트가 오면 status가 `abandoned`로 처리되는지
 
 ---
 
@@ -123,6 +123,7 @@
 - [x] `running` → `idle` 전환: `hasActiveThreads` 체크 로직
 - [x] 여러 스레드 동시 실행 시 `status.activeThread`가 단일 값만 추적하되, 종료 시 남은 활성 스레드로 재정렬
 - [x] 클라이언트의 `isRunning` 체크: `agentStatus.activeThread === store.activeThread`
+- [x] `status.model` / `status.contextUsage`가 현재 active thread 기준으로 유지되는지
 
 ---
 
@@ -159,6 +160,7 @@
 - [x] 프로세스 비정상 종료 시 마지막 메시지가 저장되는지
 - [ ] 동시 writeFileSync 호출 시 파일 손상 가능성 (같은 threads.json에 동시 쓰기)
 - [ ] `loadMessages` → `push` → `saveMessages` 패턴에서 race condition 가능성
+- [x] 스레드별 `model` / `config` 스냅샷이 저장되고 재개 시 재사용되는지
 
 ---
 
