@@ -24,6 +24,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const messageBuffer = useRef<ClientMessage[]>([]);
   const intentionalClose = useRef(false);
   const hasEverConnected = useRef(false); // 한번이라도 연결 성공했는지
+  const connectedAt = useRef(0); // 연결 시작 시각 (안정성 판단용)
 
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -60,6 +61,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
     ws.onopen = () => {
       hasEverConnected.current = true;
+      connectedAt.current = Date.now();
       updateStatus('connected');
       reconnectDelay.current = RECONNECT_MIN;
 
@@ -91,8 +93,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       cleanup();
       updateStatus('disconnected');
 
-      // 자동 재연결: 한번이라도 성공했던 연결만 재시도
-      if (!intentionalClose.current && hasEverConnected.current) {
+      // 연결 안정성 판단: 3초 미만 유지 → 불안정 연결
+      const wasStable = connectedAt.current > 0
+        && Date.now() - connectedAt.current > 3000;
+      connectedAt.current = 0;
+
+      if (!intentionalClose.current && hasEverConnected.current && wasStable) {
+        // 안정 연결 끊김 → 자동 재연결
         reconnectTimer.current = setTimeout(() => {
           reconnectDelay.current = Math.min(
             reconnectDelay.current * 1.5,
@@ -100,6 +107,15 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           );
           connectToUrl(wsUrl);
         }, reconnectDelay.current);
+      } else if (!intentionalClose.current && !wasStable) {
+        // 불안정 연결 → 재연결 중단, 저장된 URL 제거
+        hasEverConnected.current = false;
+        try {
+          localStorage.removeItem('rca_last_connection');
+          localStorage.removeItem('rca_last_direct_url');
+        } catch {
+          // ignore
+        }
       }
     };
 
