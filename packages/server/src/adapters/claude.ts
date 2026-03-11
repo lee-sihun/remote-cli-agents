@@ -211,6 +211,11 @@ export class ClaudeAdapter implements AgentAdapter {
       args.push('--model', this.config.model);
     }
 
+    const effortLevel = (this.config as unknown as Record<string, unknown>)?.effortLevel as string | undefined;
+    if (effortLevel) {
+      args.push('--effort', effortLevel);
+    }
+
     if (sessionId) {
       args.push('--resume', sessionId);
     }
@@ -229,13 +234,6 @@ export class ClaudeAdapter implements AgentAdapter {
     // 환경변수 설정
     const env = { ...process.env, ...this.config?.env };
     delete env.CLAUDECODE; // 중첩 실행 방지 우회
-
-    // 추론 단계 (effort level) — Opus/Sonnet만 지원, Haiku는 무시
-    const model = this.config?.model || 'default';
-    const effortLevel = (this.config as unknown as Record<string, unknown>)?.effortLevel as string | undefined;
-    if (effortLevel && model !== 'haiku') {
-      env.CLAUDE_CODE_EFFORT_LEVEL = effortLevel;
-    }
 
     const proc = spawn('claude', args, {
       cwd: cwd || this.config?.cwd || process.cwd(),
