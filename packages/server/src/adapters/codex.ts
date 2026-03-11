@@ -10,6 +10,7 @@ import type {
   ThreadSummary,
 } from '@rca/shared';
 import type { AgentAdapter, AgentEventHandler } from './types.js';
+import * as store from '../store.js';
 
 // JSON-RPC 요청
 interface JsonRpcRequest {
@@ -419,6 +420,19 @@ export class CodexAdapter implements AgentAdapter {
         if (thread) {
           thread.messages.push(assistantMessage);
           thread.updatedAt = Date.now();
+
+          // 스레드 메타데이터 디스크 저장
+          store.saveThread('codex', {
+            id: thread.id,
+            agentType: 'codex',
+            title: thread.title,
+            lastMessage: assistantMessage.content.slice(0, 100) || undefined,
+            messageCount: thread.messages.length,
+            createdAt: thread.createdAt,
+            updatedAt: thread.updatedAt,
+            cwd: thread.cwd,
+            contextUsage: this.status.contextUsage,
+          });
         }
 
         this.emit({

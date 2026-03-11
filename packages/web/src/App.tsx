@@ -140,6 +140,12 @@ export default function App() {
     : undefined;
   const isRunning = agentStatus?.state === 'running';
 
+  // 컨텍스트 사용량: agentStatus 우선, 없으면 스레드 저장값 fallback
+  const activeThreadSummary = store.activeAgent && store.activeThread
+    ? store.threads.get(store.activeAgent)?.find((t) => t.id === store.activeThread)
+    : undefined;
+  const contextUsage = agentStatus?.contextUsage || activeThreadSummary?.contextUsage;
+
   // Current thread approvals
   const currentApprovals = store.pendingApprovals.filter(
     (a) =>
@@ -494,7 +500,7 @@ export default function App() {
                 modeOption={currentAgentOptions.find((o) => o.key === 'permissionMode' || o.key === 'approvalMode') || null}
                 settingValues={currentAgentSettings}
                 onSettingChange={handleAgentSettingChange}
-                contextUsage={agentStatus?.contextUsage}
+                contextUsage={contextUsage}
               />
             </div>
           )}

@@ -71,7 +71,7 @@ export class ClaudeAdapter implements AgentAdapter {
         this.threads.set(t.id, {
           id: t.id,
           process: null as unknown as ChildProcess,
-          sessionId: undefined,
+          sessionId: t.sessionId,
           title: t.title,
           messages: store.loadMessages(t.id),
           createdAt: t.createdAt,
@@ -105,6 +105,14 @@ export class ClaudeAdapter implements AgentAdapter {
   sendMessage(threadId: string | undefined, message: string): void {
     const tid = threadId || randomUUID();
     const existingThread = this.threads.get(tid);
+
+    // 기존 스레드 진입 시 저장된 contextUsage 복원
+    if (existingThread) {
+      const saved = store.loadThreads('claude').find((t) => t.id === tid);
+      if (saved?.contextUsage) {
+        this.status.contextUsage = saved.contextUsage;
+      }
+    }
 
     if (existingThread && existingThread.sessionId) {
       // 기존 스레드에 재연결 (--resume)
@@ -480,6 +488,8 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
       cwd: thread.cwd,
+      sessionId: thread.sessionId,
+      contextUsage: this.status.contextUsage,
     });
   }
 

@@ -130,18 +130,7 @@ export interface ToolCall {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'requires_approval';
 }
 
-export interface ThreadSummary {
-  id: string;
-  agentType: AgentType;
-  title: string;
-  lastMessage?: string;
-  messageCount: number;
-  createdAt: number;
-  updatedAt: number;
-  cwd?: string;
-}
-
-// ─── Agent Status ───
+// ─── Context Usage ───
 
 export interface ContextUsage {
   /** 사용된 토큰 수 */
@@ -151,6 +140,23 @@ export interface ContextUsage {
   /** 사용률 (0~100) */
   percentage: number;
 }
+
+export interface ThreadSummary {
+  id: string;
+  agentType: AgentType;
+  title: string;
+  lastMessage?: string;
+  messageCount: number;
+  createdAt: number;
+  updatedAt: number;
+  cwd?: string;
+  /** 마지막 컨텍스트 사용량 (디스크 저장) */
+  contextUsage?: ContextUsage;
+  /** Claude Code 세션 ID (--resume용, 디스크 저장) */
+  sessionId?: string;
+}
+
+// ─── Agent Status ───
 
 export interface AgentStatus {
   agent: AgentType;
