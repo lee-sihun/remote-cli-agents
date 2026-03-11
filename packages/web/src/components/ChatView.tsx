@@ -182,6 +182,10 @@ function MessageBubble({ message }: { message: AgentMessage }) {
       <div className="max-w-[85%] sm:max-w-[70%] min-w-0">
         {message.reasoning && <ReasoningBlock content={message.reasoning} />}
 
+        {message.toolCalls?.map((tool) => (
+          <ToolCallCard key={tool.id} tool={tool} />
+        ))}
+
         {message.content && (
           <div className="bg-(--assistant-bubble) text-(--assistant-bubble-text) rounded-2xl rounded-bl-md px-4 py-2.5">
             <div className="markdown-content text-sm">
@@ -214,10 +218,6 @@ function MessageBubble({ message }: { message: AgentMessage }) {
             </div>
           </div>
         )}
-
-        {message.toolCalls?.map((tool) => (
-          <ToolCallCard key={tool.id} tool={tool} />
-        ))}
 
         <div className="mt-1">
           <span className="text-xs text-(--text-muted)">
