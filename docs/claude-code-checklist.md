@@ -3,7 +3,8 @@
 > 작성일: 2026-03-11
 > 대상: `packages/server/src/adapters/claude.ts`, `server.ts`, `store.ts`, `packages/web/src/`
 > 목적: Codex 등 외부 검증용
-> 비고: `[x]`는 현재 코드 또는 자동화 테스트(Vitest)로 검증한 항목
+> 비고: `[x]`는 현재 코드, 자동화 테스트(Vitest), 또는 실환경 `claude` CLI 검증으로 확인한 항목
+> 실행 메모: 실환경 스모크 테스트는 `npm run test:claude`
 
 ---
 
@@ -34,8 +35,8 @@
 - [x] `assistant` 이벤트: `message.content` 배열에서 text, thinking, tool_use 추출 정확성
 - [x] `user` 이벤트: `tool_result` 매칭이 `tool_use_id` 기반으로 정확한지
 - [x] `result` 이벤트: `session_id`, `model`, `cost_usd`, `usage` 추출 정확성
-- [ ] 미처리 이벤트 타입: `system`, `error`, `content_block_start`, `content_block_delta` 등 누락 여부
-- [ ] Claude Code가 `--output-format stream-json`에서 실제로 어떤 이벤트를 보내는지 CLI 문서 대조
+- [ ] 미처리 이벤트 타입: 실환경에서 `system`, `rate_limit_event` 확인됨. 어댑터 처리 필요 여부 검토
+- [x] Claude Code가 `--output-format stream-json`에서 실제로 어떤 이벤트를 보내는지 CLI 직접 검증
 
 ### 2-2. 텍스트 델타 vs 전체 텍스트
 - [ ] `assistant` 이벤트의 `text`가 델타(증분)인지 전체 텍스트인지 확인
@@ -55,7 +56,7 @@
 
 ### 3-1. sessionId 흐름
 - [x] `result.session_id` → `threadInfo.sessionId` → `saveThreadMeta` (디스크) → `start()` (복원) → `--resume` 전달
-- [ ] `--resume`으로 이전 대화를 실제로 이어가는지 (Claude Code가 컨텍스트 유지)
+- [x] `--resume`으로 이전 대화를 실제로 이어가는지 (Claude Code가 컨텍스트 유지)
 - [ ] 잘못된/만료된 sessionId로 `--resume` 시 에러 처리
 - [x] 서버 재시작 후 디스크에서 sessionId 복원 → `--resume` 동작 확인
 
@@ -127,14 +128,16 @@
 - [ ] `--model` 플래그에 전달되는 모델명이 Claude Code가 인식하는 형식인지
 - [ ] `sonnet`, `opus`, `haiku` → Claude Code의 실제 모델명 매핑
 - [ ] `sonnet[1m]`, `opusplan` 같은 커스텀 값이 CLI에서 동작하는지
+  - 실환경 메모: `sonnet[1m]`은 CLI에서 모델 문자열로 수용되지만 현재 계정에서는 rate limit으로 완료 검증 실패
 
 ### 7-2. 권한 모드
-- [ ] `--dangerously-skip-permissions` (bypassPermissions) 동작 확인
-- [ ] `--permission-mode plan/acceptEdits` 동작 확인
+- [x] `--dangerously-skip-permissions` (bypassPermissions) 동작 확인
+- [x] `--permission-mode plan/acceptEdits` 동작 확인
 - [ ] 권한 모드 변경 시 실행 중 프로세스에 영향 없는지 (config만 갱신)
 
 ### 7-3. effortLevel
-- [ ] `CLAUDE_CODE_EFFORT_LEVEL` 환경변수가 Claude Code에서 인식되는지
+- [x] `--effort` 플래그 동작 확인
+- [x] 어댑터가 `CLAUDE_CODE_EFFORT_LEVEL` 대신 `--effort`를 사용하도록 정렬
 - [ ] Haiku에서 effortLevel 무시 처리 확인
 
 ---
