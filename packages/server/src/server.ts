@@ -46,6 +46,7 @@ export interface ServerConfig {
   cwd: string;
   enableRelay: boolean;
   relayUrl?: string;
+  connectionPayload?: import('@rca/shared').QRPayload;
 }
 
 // 서버 인스턴스
@@ -100,6 +101,12 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
       const agents = await getAgentsList(adapters);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(agents));
+      return;
+    }
+
+    if (url === '/api/connection' && config.connectionPayload) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(config.connectionPayload));
       return;
     }
 

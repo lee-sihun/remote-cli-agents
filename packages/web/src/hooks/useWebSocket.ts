@@ -213,13 +213,30 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
 
     // 서버에서 직접 서빙되는 경우 자동 연결
-    // Vite dev 서버(9471)가 아니면 현재 호스트로 WebSocket 연결 시도
+    // /api/connection에서 세션 정보를 가져와 토큰 포함 연결
     const { hostname, port, protocol } = window.location;
     const isDevServer = port === '9471' || port === '5173';
     if (!isDevServer && hostname) {
-      const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-      const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
-      connectDirect(autoUrl);
+      const origin = `${protocol}//${hostname}${port ? ':' + port : ''}`;
+      fetch(`${origin}/api/connection`)
+        .then((res) => res.ok ? res.json() : null)
+        .then((data) => {
+          const parsed = parseQRPayload(JSON.stringify(data));
+          if (parsed) {
+            connect(parsed);
+          } else {
+            // payload 없으면 토큰 없이 직접 연결
+            const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+            const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
+            connectDirect(autoUrl);
+          }
+        })
+        .catch(() => {
+          // fetch 실패 → 토큰 없이 직접 연결
+          const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+          const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
+          connectDirect(autoUrl);
+        });
       return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

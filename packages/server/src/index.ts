@@ -140,40 +140,20 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     return;
   }
 
-  // 일반 모드: Bridge 서버 시작
-  const config: ServerConfig = {
-    port: args.port,
-    cwd: args.cwd,
-    enableRelay: !args.noRelay,
-    relayUrl: args.relay || undefined,
-  };
-
-  const server = await createBridgeServer(config);
-
-  // 감지된 에이전트 출력
-  const agentNames = Array.from(server.adapters.keys());
-  console.log(`  Detected agents: ${agentNames.length > 0 ? agentNames.join(', ') : 'none'}`);
-
-  // 세션 생성
+  // 세션 생성 (서버 시작 전에 생성하여 connectionPayload로 전달)
   const { sessionId, token } = sessionManager.create();
   const lanIp = getLanIp();
   const directUrl = `http://${lanIp}:${args.port}`;
 
-  console.log(`  Server started on ${directUrl}`);
-  console.log(`  Working directory: ${args.cwd}`);
-  console.log('');
-
-  // 릴레이 연결
+  // 릴레이 URL 결정
   let relayWsUrl: string | undefined;
   if (args.relay && !args.noRelay) {
     relayWsUrl = args.relay;
-    connectToRelay(args.relay, sessionId, token);
   } else if (!args.noRelay) {
-    // 로컬 릴레이 경로
     relayWsUrl = `ws://${lanIp}:${args.port}/relay`;
   }
 
-  // QR 코드 출력
+  // 연결 페이로드 (서버 API + QR 코드에서 공유)
   const payload: QRPayload = {
     type: 'rca',
     version: 1,
@@ -182,6 +162,30 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     directUrl,
     token,
   };
+
+  // Bridge 서버 시작
+  const config: ServerConfig = {
+    port: args.port,
+    cwd: args.cwd,
+    enableRelay: !args.noRelay,
+    relayUrl: args.relay || undefined,
+    connectionPayload: payload,
+  };
+
+  const server = await createBridgeServer(config);
+
+  // 감지된 에이전트 출력
+  const agentNames = Array.from(server.adapters.keys());
+  console.log(`  Detected agents: ${agentNames.length > 0 ? agentNames.join(', ') : 'none'}`);
+
+  console.log(`  Server started on ${directUrl}`);
+  console.log(`  Working directory: ${args.cwd}`);
+  console.log('');
+
+  // 릴레이 연결
+  if (args.relay && !args.noRelay) {
+    connectToRelay(args.relay, sessionId, token);
+  }
 
   console.log('  Scan this QR code to connect:');
   await printQR(payload);
