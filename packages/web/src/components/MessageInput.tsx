@@ -123,7 +123,7 @@ const MessageInput = ({
             placeholder={isRunning ? 'Agent is working...' : 'Send a message...'}
             disabled={disabled && !isRunning}
             rows={1}
-            className="w-full px-4 pt-3 pb-2 bg-transparent text-sm placeholder-(--text-muted) focus:outline-none resize-none disabled:opacity-50"
+            className="w-full px-4 pt-3 pb-1 bg-transparent border-none text-sm placeholder-(--text-muted) focus:outline-none focus:ring-0 resize-none disabled:opacity-50"
             style={{ maxHeight: '200px' }}
           />
 
@@ -211,13 +211,6 @@ const MessageInput = ({
           </div>
         )}
 
-        {/* 실행 중 표시 */}
-        {isRunning && (
-          <div className="flex items-center justify-center gap-2 mt-2 text-xs text-(--text-muted)">
-            <Loader2 size={12} className="animate-spin" />
-            <span>Agent is working... Click stop to interrupt</span>
-          </div>
-        )}
       </div>
     </div>
   );
