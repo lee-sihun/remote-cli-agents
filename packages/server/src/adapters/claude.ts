@@ -506,12 +506,32 @@ export class ClaudeAdapter implements AgentAdapter {
       });
     }
 
-    // stderr 에러 처리 (실시간 출력)
+    // stderr 에러 처리 (줄 단위 병합)
     let stderrEmitted = false;
+    let stderrBuffer = '';
+    const flushStderrBuffer = () => {
+      const text = stderrBuffer.trim();
+      stderrBuffer = '';
+      if (!text) return;
+      if (!this.isCurrentRun(threadId, runId, proc)) return;
+      console.error('[claude stderr]', text);
+      stderrEmitted = true;
+      this.emit({
+        type: 'error',
+        threadId,
+        agentType: 'claude',
+        error: text,
+      });
+    };
     if (proc.stderr) {
       proc.stderr.on('data', (chunk: Buffer) => {
-        const text = chunk.toString().trim();
-        if (text) {
+        stderrBuffer += chunk.toString();
+        const lines = stderrBuffer.split(/\r?\n/);
+        stderrBuffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const text = line.trim();
+          if (!text) continue;
           if (!this.isCurrentRun(threadId, runId, proc)) return;
           console.error('[claude stderr]', text);
           stderrEmitted = true;
@@ -529,6 +549,7 @@ export class ClaudeAdapter implements AgentAdapter {
     proc.on('close', (code) => {
       clearTimeout(processTimeout);
       if (!this.isCurrentRun(threadId, runId, proc)) return;
+      flushStderrBuffer();
       this.streamingBuffers.delete(threadId);
       threadInfo.process = null as unknown as ChildProcess;
       threadInfo.runId = undefined;

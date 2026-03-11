@@ -479,6 +479,30 @@ describe('ClaudeAdapter', () => {
     expect(errors[0] && errors[0].type === 'error' ? errors[0].error : null).toBe('permission denied');
   });
 
+  it('merges split stderr chunks before emitting an error event', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9702;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const errors: string[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      if (event.type === 'error') {
+        errors.push(event.error);
+      }
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-stderr-split', 'hello');
+
+    proc.stderr.write('permission ');
+    proc.stderr.write('denied\n');
+    await flushStreamEvents();
+
+    expect(errors).toEqual(['permission denied']);
+  });
+
   it('emits fallback message and clears streaming state on spawn error', async () => {
     const proc = createFakeChildProcess();
     proc.pid = 9801;
@@ -646,6 +670,52 @@ describe('ClaudeAdapter', () => {
         status: 'completed',
       },
     ]);
+  });
+
+  it('keeps pending tool calls stable when another assistant event arrives before tool_result', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9912;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-tool-gap', 'hello');
+
+    proc.stdout.write(`${JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'tool-gap', name: 'read_file', input: { path: 'a.ts' } },
+        ],
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'continuing after tool' },
+        ],
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      type: 'result',
+      result: 'continuing after tool',
+    })}\n`);
+    await flushStreamEvents();
+
+    const completed = events.find((event) => event.type === 'message_complete');
+    expect(completed && completed.type === 'message_complete'
+      ? completed.message.content
+      : null).toBe('continuing after tool');
+    expect(completed && completed.type === 'message_complete'
+      ? completed.message.toolCalls?.[0]?.status
+      : null).toBe('completed');
   });
 
   it('falls back to the latest tool call id when tool_result omits tool_use_id', async () => {
