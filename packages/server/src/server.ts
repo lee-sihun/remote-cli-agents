@@ -345,7 +345,7 @@ async function getAgentsList(
 }
 
 // 클라이언트 메시지 처리
-async function handleClientMessage(
+export async function handleClientMessage(
   ws: WebSocket,
   msg: ClientMessage,
   adapters: Map<AgentType, AgentAdapter>,
@@ -560,18 +560,26 @@ async function handleClientMessage(
 }
 
 // 클라이언트에 메시지 전송
-function sendToClient(ws: WebSocket, msg: ServerMessage): void {
+export function sendToClient(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch (err) {
+      console.error('[server] Failed to send message to client:', err);
+    }
   }
 }
 
 // 모든 연결된 클라이언트에 브로드캐스트
-function broadcastToClients(clients: Set<WebSocket>, msg: ServerMessage): void {
+export function broadcastToClients(clients: Set<WebSocket>, msg: ServerMessage): void {
   const data = JSON.stringify(msg);
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
+      try {
+        ws.send(data);
+      } catch (err) {
+        console.error('[server] Failed to broadcast message to client:', err);
+      }
     }
   }
 }

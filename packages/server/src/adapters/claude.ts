@@ -542,6 +542,9 @@ export class ClaudeAdapter implements AgentAdapter {
       clearTimeout(processTimeout);
       if (!this.isCurrentRun(threadId, runId, proc)) return;
       this.streamingBuffers.delete(threadId);
+      threadInfo.process = null as unknown as ChildProcess;
+      threadInfo.runId = undefined;
+      threadInfo.timeout = undefined;
 
       // stderr에서 이미 에러를 전송했으면 close 에러 중복 방지
       if (code !== 0 && code !== null && !stderrEmitted) {
@@ -578,12 +581,10 @@ export class ClaudeAdapter implements AgentAdapter {
         });
       }
 
-      // idle 상태로 전환 (다른 활성 스레드가 없으면)
-      const hasActiveThreads = Array.from(this.threads.values()).some(
-        (t) => t.id !== threadId && this.isProcessActive(t.process),
-      );
-
-      if (!hasActiveThreads) {
+      const nextActiveThread = Array.from(this.threads.values()).find((t) => this.isProcessActive(t.process));
+      if (nextActiveThread) {
+        this.updateStatus('running', nextActiveThread.id);
+      } else {
         this.updateStatus('idle');
       }
     });
@@ -592,6 +593,9 @@ export class ClaudeAdapter implements AgentAdapter {
       clearTimeout(processTimeout);
       if (!this.isCurrentRun(threadId, runId, proc)) return;
       this.streamingBuffers.delete(threadId);
+      threadInfo.process = null as unknown as ChildProcess;
+      threadInfo.runId = undefined;
+      threadInfo.timeout = undefined;
       this.emit({
         type: 'error',
         threadId,

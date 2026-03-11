@@ -58,3 +58,11 @@ export function buildWebSocketUrl(payload: import('@rca/shared').QRPayload): str
   url.searchParams.set('token', payload.token);
   return url.toString();
 }
+
+export function generateThreadId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `thread-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}

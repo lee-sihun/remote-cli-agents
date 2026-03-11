@@ -15,6 +15,7 @@ import {
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './hooks/useAgent';
 import type { AgentType, ClientMessage, ServerMessage } from './lib/protocol';
+import { generateThreadId } from './lib/protocol';
 import ConnectScreen from './components/ConnectScreen';
 import ChatView from './components/ChatView';
 import TerminalView from './components/TerminalView';
@@ -183,7 +184,7 @@ export default function App() {
       if (!s.activeAgent) return;
 
       // 새 대화: threadId를 클라이언트에서 생성
-      const threadId = s.activeThread || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const threadId = s.activeThread || generateThreadId();
       if (!s.activeThread) {
         s.setActiveThread(threadId);
       }
