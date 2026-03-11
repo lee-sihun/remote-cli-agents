@@ -10,18 +10,18 @@ interface AgentSelectorProps {
 }
 
 function statusDot(status?: AgentStatus): string {
-  if (!status) return 'bg-[var(--text-muted)]';
+  if (!status) return 'bg-(--text-muted)';
   switch (status.state) {
     case 'idle':
-      return 'bg-[var(--success)]';
+      return 'bg-(--success)';
     case 'running':
-      return 'bg-[var(--warning)] animate-pulse';
+      return 'bg-(--warning) animate-pulse';
     case 'waiting_approval':
-      return 'bg-[var(--warning)]';
+      return 'bg-(--warning)';
     case 'error':
-      return 'bg-[var(--error)]';
+      return 'bg-(--error)';
     default:
-      return 'bg-[var(--text-muted)]';
+      return 'bg-(--text-muted)';
   }
 }
 
@@ -52,9 +52,9 @@ export default function AgentSelector({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] hover:bg-[var(--bg-tertiary)] transition-colors w-full"
+        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-(--bg-secondary) border border-(--border) hover:bg-(--bg-tertiary) transition-colors w-full"
       >
-        <Bot size={16} className="text-[var(--accent)]" />
+        <Bot size={16} className="text-(--accent)" />
         <span className="flex-1 text-left text-sm font-medium truncate">
           {active ? active.name : 'Select Agent'}
         </span>
@@ -65,12 +65,12 @@ export default function AgentSelector({
         )}
         <ChevronDown
           size={14}
-          className={`text-[var(--text-muted)] transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`text-(--text-muted) transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl z-50 overflow-hidden animate-fade-in">
+        <div className="absolute top-full left-0 right-0 mt-1 bg-(--bg-secondary) border border-(--border) rounded-lg shadow-xl z-50 overflow-hidden animate-fade-in">
           {agents.map((agent) => {
             const s = statuses.get(agent.type);
             return (
@@ -81,9 +81,9 @@ export default function AgentSelector({
                   setOpen(false);
                 }}
                 disabled={!agent.available}
-                className={`flex items-center gap-3 w-full px-3 py-2.5 text-left hover:bg-[var(--bg-tertiary)] transition-colors ${
+                className={`flex items-center gap-3 w-full px-3 py-2.5 text-left hover:bg-(--bg-tertiary) transition-colors ${
                   agent.type === activeAgent
-                    ? 'bg-[var(--bg-tertiary)]'
+                    ? 'bg-(--bg-tertiary)'
                     : ''
                 } ${!agent.available ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
@@ -94,13 +94,13 @@ export default function AgentSelector({
                   <div className="text-sm font-medium truncate">
                     {agent.name}
                   </div>
-                  <div className="text-xs text-[var(--text-muted)] truncate">
+                  <div className="text-xs text-(--text-muted) truncate">
                     {agent.description}
                     {s?.model ? ` - ${s.model}` : ''}
                   </div>
                 </div>
                 {!agent.available && (
-                  <span className="text-xs text-[var(--error)]">
+                  <span className="text-xs text-(--error)">
                     unavailable
                   </span>
                 )}

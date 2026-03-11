@@ -38,6 +38,11 @@ interface CodexItemDelta {
   toolName?: string;
   toolInput?: Record<string, unknown>;
   toolOutput?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
   [key: string]: unknown;
 }
 
@@ -390,6 +395,19 @@ export class CodexAdapter implements AgentAdapter {
       case 'turn/completed': {
         const thread = this.threads.get(threadId);
         const text = this.accumulatedText.get(threadId) || '';
+
+        // 컨텍스트 사용량 계산
+        if (params.usage) {
+          const totalTokens = params.usage.total_tokens
+            || ((params.usage.input_tokens || 0) + (params.usage.output_tokens || 0));
+          const model = this.config?.model || '';
+          // Codex 모델별 컨텍스트 윈도우 크기 추정
+          const contextWindow = model.includes('o3') || model.includes('o4') ? 200_000
+            : model.includes('gpt-4') ? 1_047_576
+            : 200_000;
+          const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
+          this.status.contextUsage = { used: totalTokens, total: contextWindow, percentage };
+        }
 
         const assistantMessage: AgentMessage = {
           id: randomUUID(),

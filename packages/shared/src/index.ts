@@ -143,11 +143,21 @@ export interface ThreadSummary {
 
 // ─── Agent Status ───
 
+export interface ContextUsage {
+  /** 사용된 토큰 수 */
+  used: number;
+  /** 전체 컨텍스트 윈도우 크기 */
+  total: number;
+  /** 사용률 (0~100) */
+  percentage: number;
+}
+
 export interface AgentStatus {
   agent: AgentType;
   state: 'idle' | 'running' | 'waiting_approval' | 'error';
   activeThread?: string;
   model?: string;
+  contextUsage?: ContextUsage;
 }
 
 // ─── Agent Events ───

@@ -73,12 +73,12 @@ export default function ThreadList({
           <div className="flex flex-col items-center justify-center h-full p-4 text-center">
             <MessageSquare
               size={32}
-              className="text-[var(--text-muted)] mb-3"
+              className="text-(--text-muted) mb-3"
             />
-            <p className="text-sm text-[var(--text-muted)]">
+            <p className="text-sm text-(--text-muted)">
               No conversations yet
             </p>
-            <p className="text-xs text-[var(--text-muted)] mt-1">
+            <p className="text-xs text-(--text-muted) mt-1">
               Start a new chat to begin
             </p>
           </div>
@@ -90,15 +90,15 @@ export default function ThreadList({
                 onClick={() => onSelectThread(thread.id)}
                 className={`w-full text-left p-3 rounded-lg transition-colors ${
                   thread.id === activeThread
-                    ? 'bg-[var(--bg-tertiary)]'
-                    : 'hover:bg-[var(--bg-tertiary)]/50'
+                    ? 'bg-(--bg-tertiary)'
+                    : 'hover:bg-(--bg-tertiary)/50'
                 }`}
               >
                 <div className="flex items-start gap-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
                       {!activeAgent && (
-                        <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--text-muted)]">
+                        <span className="flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-(--bg-hover) text-(--text-muted)">
                           <Bot size={10} />
                           {agentLabel(thread.agentType)}
                         </span>
@@ -108,12 +108,12 @@ export default function ThreadList({
                       </span>
                     </div>
                     {thread.lastMessage && (
-                      <p className="text-xs text-[var(--text-muted)] truncate">
+                      <p className="text-xs text-(--text-muted) truncate">
                         {thread.lastMessage}
                       </p>
                     )}
                   </div>
-                  <div className="flex items-center gap-1 text-xs text-[var(--text-muted)] shrink-0">
+                  <div className="flex items-center gap-1 text-xs text-(--text-muted) shrink-0">
                     <Clock size={10} />
                     {formatTime(thread.updatedAt)}
                   </div>
@@ -125,10 +125,10 @@ export default function ThreadList({
       </div>
 
       {/* New chat button */}
-      <div className="p-3 border-t border-[var(--border)]">
+      <div className="p-3 border-t border-(--border)">
         <button
           onClick={onNewChat}
-          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:opacity-90 transition-opacity"
+          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-(--accent) text-white text-sm font-medium hover:opacity-90 transition-opacity"
         >
           <Plus size={16} />
           New Chat

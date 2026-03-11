@@ -26,6 +26,13 @@ interface ClaudeStreamEvent {
   cost_usd?: number;
   duration_ms?: number;
   model?: string;
+  total_cost_usd?: number;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
   [key: string]: unknown;
 }
 
@@ -342,6 +349,21 @@ export class ClaudeAdapter implements AgentAdapter {
 
             if (event.model) {
               this.status.model = event.model;
+            }
+
+            // 컨텍스트 사용량 계산
+            if (event.usage) {
+              const inputTokens = (event.usage.input_tokens || 0)
+                + (event.usage.cache_read_input_tokens || 0)
+                + (event.usage.cache_creation_input_tokens || 0);
+              const totalTokens = inputTokens + (event.usage.output_tokens || 0);
+              // 모델별 컨텍스트 윈도우 크기 추정
+              const model = this.status.model || this.config?.model || 'default';
+              const contextWindow = model.includes('1m') ? 1_000_000
+                : model.includes('haiku') ? 200_000
+                : 200_000; // Sonnet/Opus 기본값
+              const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
+              this.status.contextUsage = { used: totalTokens, total: contextWindow, percentage };
             }
 
             // 최종 메시지 생성 (accumulatedText 없으면 result 필드 사용)

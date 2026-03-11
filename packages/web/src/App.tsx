@@ -13,7 +13,6 @@ import {
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAgentStore } from './hooks/useAgent';
 import type { AgentType, ClientMessage, ServerMessage } from './lib/protocol';
-import AgentSettings from './components/AgentSettings';
 import ConnectScreen from './components/ConnectScreen';
 import ChatView from './components/ChatView';
 import TerminalView from './components/TerminalView';
@@ -486,21 +485,16 @@ export default function App() {
           {/* Input + settings */}
           {viewMode === 'chat' && (
             <div className="border-t border-(--border) bg-(--bg-primary)">
-              {/* 에이전트 설정 드롭다운 */}
-              {currentAgentOptions.length > 0 && (
-                <div className="px-3 sm:px-4 pt-2 max-w-4xl mx-auto">
-                  <AgentSettings
-                    options={currentAgentOptions}
-                    values={currentAgentSettings}
-                    onChange={handleAgentSettingChange}
-                  />
-                </div>
-              )}
               <MessageInput
                 onSend={handleSendMessage}
                 onInterrupt={handleInterrupt}
                 isRunning={isRunning}
                 disabled={!store.activeAgent || ws.status !== 'connected'}
+                inputOptions={currentAgentOptions.filter((o) => o.key === 'model' || o.key === 'effortLevel')}
+                modeOption={currentAgentOptions.find((o) => o.key === 'permissionMode' || o.key === 'approvalMode') || null}
+                settingValues={currentAgentSettings}
+                onSettingChange={handleAgentSettingChange}
+                contextUsage={agentStatus?.contextUsage}
               />
             </div>
           )}

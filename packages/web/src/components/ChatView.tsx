@@ -29,12 +29,12 @@ function ToolCallCard({ tool }: { tool: ToolCall }) {
   const [expanded, setExpanded] = React.useState(false);
 
   const statusIcon = {
-    pending: <Clock size={12} className="text-[var(--text-muted)]" />,
-    running: <Loader2 size={12} className="text-[var(--warning)] animate-spin" />,
-    completed: <Check size={12} className="text-[var(--success)]" />,
-    failed: <X size={12} className="text-[var(--error)]" />,
+    pending: <Clock size={12} className="text-(--text-muted)" />,
+    running: <Loader2 size={12} className="text-(--warning) animate-spin" />,
+    completed: <Check size={12} className="text-(--success)" />,
+    failed: <X size={12} className="text-(--error)" />,
     requires_approval: (
-      <AlertCircle size={12} className="text-[var(--warning)]" />
+      <AlertCircle size={12} className="text-(--warning)" />
     ),
   };
 
@@ -47,44 +47,44 @@ function ToolCallCard({ tool }: { tool: ToolCall }) {
   };
 
   return (
-    <div className="my-2 rounded-lg border border-[var(--border)] overflow-hidden bg-[var(--bg-primary)]/50">
+    <div className="my-2 rounded-lg border border-(--border) overflow-hidden bg-(--bg-primary)/50">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-[var(--bg-tertiary)]/50 transition-colors"
+        className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-(--bg-tertiary)/50 transition-colors"
       >
-        <Wrench size={12} className="text-[var(--accent)] shrink-0" />
+        <Wrench size={12} className="text-(--accent) shrink-0" />
         <span className="text-xs font-mono font-medium flex-1 truncate">
           {tool.name}
         </span>
         {statusIcon[tool.status]}
-        <span className="text-xs text-[var(--text-muted)]">
+        <span className="text-xs text-(--text-muted)">
           {statusLabel[tool.status]}
         </span>
         {expanded ? (
-          <ChevronDown size={12} className="text-[var(--text-muted)]" />
+          <ChevronDown size={12} className="text-(--text-muted)" />
         ) : (
-          <ChevronRight size={12} className="text-[var(--text-muted)]" />
+          <ChevronRight size={12} className="text-(--text-muted)" />
         )}
       </button>
 
       {expanded && (
-        <div className="border-t border-[var(--border)] p-3 space-y-2">
+        <div className="border-t border-(--border) p-3 space-y-2">
           {tool.input && Object.keys(tool.input).length > 0 && (
             <div>
-              <div className="text-xs font-medium text-[var(--text-muted)] mb-1">
+              <div className="text-xs font-medium text-(--text-muted) mb-1">
                 Input
               </div>
-              <pre className="text-xs font-mono bg-[var(--bg-primary)] rounded p-2 overflow-x-auto max-h-48 overflow-y-auto">
+              <pre className="text-xs font-mono bg-(--bg-primary) rounded p-2 overflow-x-auto max-h-48 overflow-y-auto">
                 {JSON.stringify(tool.input, null, 2)}
               </pre>
             </div>
           )}
           {tool.output && (
             <div>
-              <div className="text-xs font-medium text-[var(--text-muted)] mb-1">
+              <div className="text-xs font-medium text-(--text-muted) mb-1">
                 Output
               </div>
-              <pre className="text-xs font-mono bg-[var(--bg-primary)] rounded p-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
+              <pre className="text-xs font-mono bg-(--bg-primary) rounded p-2 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap">
                 {tool.output}
               </pre>
             </div>
@@ -101,25 +101,25 @@ function ReasoningBlock({ content }: { content: string }) {
   const [expanded, setExpanded] = React.useState(false);
 
   return (
-    <div className="my-2 rounded-lg border border-[var(--border)] overflow-hidden bg-[var(--bg-primary)]/50">
+    <div className="my-2 rounded-lg border border-(--border) overflow-hidden bg-(--bg-primary)/50">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-[var(--bg-tertiary)]/50 transition-colors"
+        className="flex items-center gap-2 w-full px-3 py-2 text-left hover:bg-(--bg-tertiary)/50 transition-colors"
       >
         <Brain size={12} className="text-purple-400 shrink-0" />
         <span className="text-xs font-medium text-purple-400 flex-1">
           Thinking...
         </span>
         {expanded ? (
-          <ChevronDown size={12} className="text-[var(--text-muted)]" />
+          <ChevronDown size={12} className="text-(--text-muted)" />
         ) : (
-          <ChevronRight size={12} className="text-[var(--text-muted)]" />
+          <ChevronRight size={12} className="text-(--text-muted)" />
         )}
       </button>
 
       {expanded && (
-        <div className="border-t border-[var(--border)] p-3">
-          <div className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
+        <div className="border-t border-(--border) p-3">
+          <div className="text-xs text-(--text-secondary) whitespace-pre-wrap leading-relaxed">
             {content}
           </div>
         </div>
@@ -135,11 +135,11 @@ function MessageBubble({ message }: { message: AgentMessage }) {
     return (
       <div className="flex justify-end mb-4 animate-slide-right">
         <div className="max-w-[85%] sm:max-w-[70%]">
-          <div className="bg-[var(--user-bubble)] text-[var(--user-bubble-text)] rounded-2xl rounded-br-md px-4 py-2.5">
+          <div className="bg-(--user-bubble) text-(--user-bubble-text) rounded-2xl rounded-br-md px-4 py-2.5">
             <p className="text-sm whitespace-pre-wrap">{message.content}</p>
           </div>
           <div className="text-right mt-1">
-            <span className="text-xs text-[var(--text-muted)]">
+            <span className="text-xs text-(--text-muted)">
               {new Date(message.timestamp).toLocaleTimeString([], {
                 hour: '2-digit',
                 minute: '2-digit',
@@ -148,7 +148,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
           </div>
         </div>
         <div className="shrink-0 ml-2 flex items-start">
-          <div className="w-7 h-7 rounded-full bg-[var(--user-bubble)] flex items-center justify-center">
+          <div className="w-7 h-7 rounded-full bg-(--user-bubble) flex items-center justify-center">
             <User size={14} className="text-white" />
           </div>
         </div>
@@ -159,9 +159,9 @@ function MessageBubble({ message }: { message: AgentMessage }) {
   if (message.role === 'system') {
     return (
       <div className="flex justify-center mb-4 animate-fade-in">
-        <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--bg-secondary)] border border-[var(--border)]">
-          <AlertCircle size={14} className="text-[var(--warning)]" />
-          <span className="text-xs text-[var(--text-secondary)]">
+        <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-(--bg-secondary) border border-(--border)">
+          <AlertCircle size={14} className="text-(--warning)" />
+          <span className="text-xs text-(--text-secondary)">
             {message.content}
           </span>
         </div>
@@ -173,7 +173,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
   return (
     <div className="flex justify-start mb-4 animate-slide-left">
       <div className="shrink-0 mr-2 flex items-start">
-        <div className="w-7 h-7 rounded-full bg-[var(--accent)] flex items-center justify-center">
+        <div className="w-7 h-7 rounded-full bg-(--accent) flex items-center justify-center">
           <Bot size={14} className="text-white" />
         </div>
       </div>
@@ -181,7 +181,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
         {message.reasoning && <ReasoningBlock content={message.reasoning} />}
 
         {message.content && (
-          <div className="bg-[var(--assistant-bubble)] text-[var(--assistant-bubble-text)] rounded-2xl rounded-bl-md px-4 py-2.5">
+          <div className="bg-(--assistant-bubble) text-(--assistant-bubble-text) rounded-2xl rounded-bl-md px-4 py-2.5">
             <div className="markdown-content text-sm">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -218,7 +218,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
         ))}
 
         <div className="mt-1">
-          <span className="text-xs text-[var(--text-muted)]">
+          <span className="text-xs text-(--text-muted)">
             {new Date(message.timestamp).toLocaleTimeString([], {
               hour: '2-digit',
               minute: '2-digit',
@@ -236,7 +236,7 @@ function StreamingBubble({ content, toolCalls }: { content: string; toolCalls?: 
   return (
     <div className="flex justify-start mb-4">
       <div className="shrink-0 mr-2 flex items-start">
-        <div className="w-7 h-7 rounded-full bg-[var(--accent)] flex items-center justify-center">
+        <div className="w-7 h-7 rounded-full bg-(--accent) flex items-center justify-center">
           <Bot size={14} className="text-white" />
         </div>
       </div>
@@ -250,7 +250,7 @@ function StreamingBubble({ content, toolCalls }: { content: string; toolCalls?: 
           </div>
         )}
 
-        <div className="bg-[var(--assistant-bubble)] text-[var(--assistant-bubble-text)] rounded-2xl rounded-bl-md px-4 py-2.5">
+        <div className="bg-(--assistant-bubble) text-(--assistant-bubble-text) rounded-2xl rounded-bl-md px-4 py-2.5">
           {content ? (
             <div className="markdown-content text-sm">
               <ReactMarkdown
@@ -279,12 +279,12 @@ function StreamingBubble({ content, toolCalls }: { content: string; toolCalls?: 
               >
                 {content}
               </ReactMarkdown>
-              <span className="inline-block w-2 h-4 bg-[var(--accent)] ml-0.5 animate-blink" />
+              <span className="inline-block w-2 h-4 bg-(--accent) ml-0.5 animate-blink" />
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <Loader2 size={14} className="animate-spin text-[var(--accent)]" />
-              <span className="text-sm text-[var(--text-muted)]">
+              <Loader2 size={14} className="animate-spin text-(--accent)" />
+              <span className="text-sm text-(--text-muted)">
                 Thinking...
               </span>
             </div>
@@ -334,11 +334,11 @@ export default function ChatView({
     return (
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="text-center">
-          <Bot size={48} className="mx-auto text-[var(--text-muted)] mb-4" />
-          <h2 className="text-lg font-medium text-[var(--text-secondary)] mb-1">
+          <Bot size={48} className="mx-auto text-(--text-muted) mb-4" />
+          <h2 className="text-lg font-medium text-(--text-secondary) mb-1">
             Start a conversation
           </h2>
-          <p className="text-sm text-[var(--text-muted)] max-w-sm">
+          <p className="text-sm text-(--text-muted) max-w-sm">
             Send a message to begin working with your coding agent. You can ask
             it to write code, debug issues, or explore your project.
           </p>

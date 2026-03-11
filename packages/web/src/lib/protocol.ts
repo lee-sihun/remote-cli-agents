@@ -7,6 +7,7 @@ export type {
   AgentInfo,
   AgentConfig,
   AgentOptionDef,
+  ContextUsage,
   AgentMessage,
   ToolCall,
   ThreadSummary,

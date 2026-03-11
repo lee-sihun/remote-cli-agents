@@ -16,20 +16,20 @@ export default function StatusBar({
 }: StatusBarProps) {
   const statusConfig = {
     connected: {
-      color: 'bg-[var(--success)]',
-      textColor: 'text-[var(--success)]',
+      color: 'bg-(--success)',
+      textColor: 'text-(--success)',
       icon: Wifi,
       label: 'Connected',
     },
     connecting: {
-      color: 'bg-[var(--warning)]',
-      textColor: 'text-[var(--warning)]',
+      color: 'bg-(--warning)',
+      textColor: 'text-(--warning)',
       icon: Loader2,
       label: 'Reconnecting...',
     },
     disconnected: {
-      color: 'bg-[var(--error)]',
-      textColor: 'text-[var(--error)]',
+      color: 'bg-(--error)',
+      textColor: 'text-(--error)',
       icon: WifiOff,
       label: 'Disconnected',
     },
@@ -41,7 +41,7 @@ export default function StatusBar({
   return (
     <button
       onClick={onSettingsClick}
-      className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors text-sm"
+      className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-sm"
       title="Connection settings"
     >
       <span className="relative flex items-center">
@@ -57,11 +57,11 @@ export default function StatusBar({
         {config.label}
       </span>
       {payload?.relay && status === 'connected' && (
-        <span className="text-[var(--text-muted)] text-xs hidden sm:inline">
+        <span className="text-(--text-muted) text-xs hidden sm:inline">
           (relay)
         </span>
       )}
-      <Settings size={14} className="text-[var(--text-muted)]" />
+      <Settings size={14} className="text-(--text-muted)" />
     </button>
   );
 }

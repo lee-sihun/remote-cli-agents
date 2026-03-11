@@ -36,7 +36,7 @@ function DiffRenderer({ code }: { code: string }) {
         } else if (line.startsWith('-') && !line.startsWith('---')) {
           className = 'diff-remove';
         } else if (line.startsWith('@@')) {
-          className = 'text-[var(--accent)] opacity-70';
+          className = 'text-(--accent) opacity-70';
         }
         return (
           <div key={i} className={className}>
@@ -65,11 +65,11 @@ export default function CodeBlock({ language, children }: CodeBlockProps) {
   return (
     <div className="relative group rounded-lg overflow-hidden bg-[#1a1a1a] my-2">
       {/* Header bar */}
-      <div className="flex items-center justify-between px-4 py-1.5 bg-[#141414] text-xs text-[var(--text-muted)]">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-[#141414] text-xs text-(--text-muted)">
         <span>{effectiveLang || 'text'}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 px-2 py-1 rounded hover:bg-[var(--bg-tertiary)] transition-colors opacity-0 group-hover:opacity-100"
+          className="flex items-center gap-1 px-2 py-1 rounded hover:bg-(--bg-tertiary) transition-colors opacity-0 group-hover:opacity-100"
           aria-label="Copy code"
         >
           {copied ? (

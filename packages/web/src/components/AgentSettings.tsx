@@ -22,12 +22,12 @@ const AgentSettings = ({ options, values, onChange }: AgentSettingsProps) => {
     <div className="flex items-center gap-2 flex-wrap">
       {options.filter(isVisible).map((opt) => (
         <div key={opt.key} className="flex items-center gap-1">
-          <span className="text-xs text-[var(--text-muted)]">{opt.label}</span>
+          <span className="text-xs text-(--text-muted)">{opt.label}</span>
           {opt.type === 'select' && opt.options ? (
             <select
               value={values[opt.key] || opt.defaultValue || ''}
               onChange={(e) => onChange(opt.key, e.target.value)}
-              className="px-2 py-1 rounded-md bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] cursor-pointer"
+              className="px-2 py-1 rounded-md bg-(--bg-tertiary) border border-(--border) text-xs text-(--text-primary) focus:outline-none focus:border-(--accent) cursor-pointer"
             >
               {opt.options.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -41,7 +41,7 @@ const AgentSettings = ({ options, values, onChange }: AgentSettingsProps) => {
               value={values[opt.key] || ''}
               onChange={(e) => onChange(opt.key, e.target.value)}
               placeholder={opt.defaultValue || ''}
-              className="w-28 px-2 py-1 rounded-md bg-[var(--bg-tertiary)] border border-[var(--border)] text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+              className="w-28 px-2 py-1 rounded-md bg-(--bg-tertiary) border border-(--border) text-xs text-(--text-primary) focus:outline-none focus:border-(--accent)"
             />
           )}
         </div>

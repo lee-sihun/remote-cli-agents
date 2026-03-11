@@ -44,12 +44,12 @@ function fileIcon(name: string, type: 'file' | 'directory') {
     case 'css':
     case 'scss':
     case 'html':
-      return <FileCode size={14} className="text-[var(--accent)]" />;
+      return <FileCode size={14} className="text-(--accent)" />;
     case 'json':
     case 'yaml':
     case 'yml':
     case 'toml':
-      return <FileJson size={14} className="text-[var(--warning)]" />;
+      return <FileJson size={14} className="text-(--warning)" />;
     case 'png':
     case 'jpg':
     case 'jpeg':
@@ -60,9 +60,9 @@ function fileIcon(name: string, type: 'file' | 'directory') {
     case 'md':
     case 'txt':
     case 'log':
-      return <FileText size={14} className="text-[var(--text-muted)]" />;
+      return <FileText size={14} className="text-(--text-muted)" />;
     default:
-      return <File size={14} className="text-[var(--text-muted)]" />;
+      return <File size={14} className="text-(--text-muted)" />;
   }
 }
 
@@ -112,20 +112,20 @@ function TreeNode({
     <div>
       <button
         onClick={handleClick}
-        className="flex items-center gap-1.5 w-full px-2 py-1 text-left hover:bg-[var(--bg-tertiary)] rounded transition-colors"
+        className="flex items-center gap-1.5 w-full px-2 py-1 text-left hover:bg-(--bg-tertiary) rounded transition-colors"
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
       >
         {entry.type === 'directory' ? (
           <>
             {expanded ? (
-              <ChevronDown size={12} className="text-[var(--text-muted)] shrink-0" />
+              <ChevronDown size={12} className="text-(--text-muted) shrink-0" />
             ) : (
-              <ChevronRight size={12} className="text-[var(--text-muted)] shrink-0" />
+              <ChevronRight size={12} className="text-(--text-muted) shrink-0" />
             )}
             {expanded ? (
-              <FolderOpen size={14} className="text-[var(--warning)] shrink-0" />
+              <FolderOpen size={14} className="text-(--warning) shrink-0" />
             ) : (
-              <Folder size={14} className="text-[var(--warning)] shrink-0" />
+              <Folder size={14} className="text-(--warning) shrink-0" />
             )}
           </>
         ) : (
@@ -138,7 +138,7 @@ function TreeNode({
           {entry.name}
         </span>
         {entry.type === 'file' && entry.size !== undefined && (
-          <span className="text-xs text-[var(--text-muted)] shrink-0">
+          <span className="text-xs text-(--text-muted) shrink-0">
             {formatSize(entry.size)}
           </span>
         )}
@@ -167,7 +167,7 @@ function TreeNode({
             ))}
           {children.length === 0 && (
             <div
-              className="text-xs text-[var(--text-muted)] py-1"
+              className="text-xs text-(--text-muted) py-1"
               style={{ paddingLeft: `${(depth + 1) * 16 + 8}px` }}
             >
               Empty
@@ -222,19 +222,19 @@ export default function FileExplorer({
       />
 
       {/* Panel */}
-      <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-[var(--bg-primary)] border-l border-[var(--border)] z-50 flex flex-col animate-slide-left shadow-2xl">
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-(--bg-primary) border-l border-(--border) z-50 flex flex-col animate-slide-left shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-(--border)">
           <div className="flex items-center gap-2">
             {viewingFile ? (
               <button
                 onClick={() => setViewingFile(null)}
-                className="p-1 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
+                className="p-1 rounded hover:bg-(--bg-tertiary) transition-colors"
               >
-                <ArrowLeft size={16} className="text-[var(--text-muted)]" />
+                <ArrowLeft size={16} className="text-(--text-muted)" />
               </button>
             ) : (
-              <Folder size={18} className="text-[var(--accent)]" />
+              <Folder size={18} className="text-(--accent)" />
             )}
             <h2 className="font-semibold text-sm truncate">
               {viewingFile ? viewingFile.split('/').pop() : 'Files'}
@@ -244,17 +244,17 @@ export default function FileExplorer({
             {!viewingFile && (
               <button
                 onClick={handleRefresh}
-                className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors"
+                className="p-1.5 rounded-lg hover:bg-(--bg-tertiary) transition-colors"
                 title="Refresh"
               >
-                <RefreshCw size={14} className="text-[var(--text-muted)]" />
+                <RefreshCw size={14} className="text-(--text-muted)" />
               </button>
             )}
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors"
+              className="p-1.5 rounded-lg hover:bg-(--bg-tertiary) transition-colors"
             >
-              <X size={14} className="text-[var(--text-muted)]" />
+              <X size={14} className="text-(--text-muted)" />
             </button>
           </div>
         </div>
@@ -263,10 +263,10 @@ export default function FileExplorer({
         <div className="flex-1 overflow-y-auto">
           {viewingFile ? (
             <div className="p-4">
-              <div className="text-xs font-mono text-[var(--text-muted)] mb-2 break-all">
+              <div className="text-xs font-mono text-(--text-muted) mb-2 break-all">
                 {viewingFile}
               </div>
-              <pre className="text-xs font-mono bg-[var(--bg-secondary)] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">
+              <pre className="text-xs font-mono bg-(--bg-secondary) rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">
                 {fileContent.get(viewingFile) ?? 'Loading...'}
               </pre>
             </div>
@@ -291,7 +291,7 @@ export default function FileExplorer({
                   />
                 ))}
               {rootEntries.length === 0 && (
-                <div className="p-4 text-center text-sm text-[var(--text-muted)]">
+                <div className="p-4 text-center text-sm text-(--text-muted)">
                   No files found
                 </div>
               )}
