@@ -11,6 +11,7 @@ import type {
 } from '@rca/shared';
 import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
+import { terminateChildProcess } from '../process.js';
 
 // JSON-RPC 요청
 interface JsonRpcRequest {
@@ -88,7 +89,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async stop(): Promise<void> {
     if (this.process && !this.process.killed) {
-      this.process.kill('SIGTERM');
+      terminateChildProcess(this.process);
     }
     this.process = null;
     this.initialized = false;

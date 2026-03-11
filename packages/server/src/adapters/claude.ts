@@ -12,6 +12,7 @@ import type {
 } from '@rca/shared';
 import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
+import { terminateChildProcess } from '../process.js';
 
 // Claude stream-json 이벤트 타입
 interface ClaudeStreamEvent {
@@ -96,11 +97,7 @@ export class ClaudeAdapter implements AgentAdapter {
     for (const [, thread] of this.threads) {
       if (thread.timeout) clearTimeout(thread.timeout);
       if (this.isProcessActive(thread.process)) {
-        if (process.platform === 'win32') {
-          thread.process.kill();
-        } else {
-          thread.process.kill('SIGTERM');
-        }
+        terminateChildProcess(thread.process);
       }
     }
     this.updateStatus('idle');
@@ -123,11 +120,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (existingThread && this.isProcessActive(existingThread.process)) {
       console.log(`[claude] Killing existing process for thread ${tid} before new message`);
       if (existingThread.timeout) clearTimeout(existingThread.timeout);
-      if (process.platform === 'win32') {
-        existingThread.process.kill();
-      } else {
-        existingThread.process.kill('SIGTERM');
-      }
+      terminateChildProcess(existingThread.process);
     }
 
     // 기존 스레드 진입 시 in-memory contextUsage 복원
@@ -147,11 +140,7 @@ export class ClaudeAdapter implements AgentAdapter {
   interrupt(threadId: string): void {
     const thread = this.threads.get(threadId);
     if (thread && this.isProcessActive(thread.process)) {
-      if (process.platform === 'win32') {
-        thread.process.kill();
-      } else {
-        thread.process.kill('SIGINT');
-      }
+      terminateChildProcess(thread.process, 'SIGINT');
     }
   }
 
@@ -282,11 +271,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const processTimeout = setTimeout(() => {
       if (this.isCurrentRun(threadId, runId, proc) && this.isProcessActive(proc)) {
         console.error(`[claude] Process timeout (5min) for thread ${threadId}`);
-        if (process.platform === 'win32') {
-          proc.kill();
-        } else {
-          proc.kill('SIGTERM');
-        }
+        terminateChildProcess(proc);
       }
     }, 5 * 60 * 1000);
 
@@ -453,11 +438,14 @@ export class ClaudeAdapter implements AgentAdapter {
             if (event.model) resultMeta.model = event.model;
 
             // 컨텍스트 사용량 계산 (스레드별 저장)
-            // input_tokens = 새 입력, cache_read = 캐시에서 읽은 입력
-            // cache_creation은 input_tokens의 부분집합이므로 중복 추가하지 않음
+            // prompt caching 문서 기준:
+            // - input_tokens = 마지막 cache breakpoint 이후 입력
+            // - cache_read_input_tokens = 캐시에서 읽은 입력
+            // - cache_creation_input_tokens = 이번 요청에서 새로 캐시된 입력
             if (event.usage) {
               const inputTokens = (event.usage.input_tokens || 0)
-                + (event.usage.cache_read_input_tokens || 0);
+                + (event.usage.cache_read_input_tokens || 0)
+                + (event.usage.cache_creation_input_tokens || 0);
               const outputTokens = event.usage.output_tokens || 0;
               const totalTokens = inputTokens + outputTokens;
               resultMeta.usage = { inputTokens, outputTokens };
