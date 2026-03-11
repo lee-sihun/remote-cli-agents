@@ -166,41 +166,41 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     // localStorage 유지 → 재연결 시 활용
   }, [cleanup, updateStatus]);
 
-  // /api/connection에서 세션 정보 가져와 연결
+  // /api/connection에서 토큰 가져와 /ws 직접 연결 (same-origin 전용)
   const connectFromApi = useCallback(() => {
     const { hostname, port, protocol } = window.location;
     const origin = `${protocol}//${hostname}${port ? ':' + port : ''}`;
+    const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsBase = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
+
     fetch(`${origin}/api/connection`)
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
-        const parsed = parseQRPayload(JSON.stringify(data));
-        if (parsed) {
-          connect(parsed);
+        if (data?.token && data?.sessionId) {
+          // 토큰 포함 직접 연결 (relay 경유 안함)
+          connectDirect(`${wsBase}?token=${data.token}&sessionId=${data.sessionId}`);
         } else {
-          const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-          const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
-          connectDirect(autoUrl);
+          connectDirect(wsBase);
         }
       })
       .catch(() => {
-        const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
-        const autoUrl = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
-        connectDirect(autoUrl);
+        connectDirect(wsBase);
       });
-  }, [connect, connectDirect]);
+  }, [connectDirect]);
 
-  // 재연결 (disconnect 후 다시 연결)
+  // 재연결
   const reconnect = useCallback(() => {
-    // localStorage에 저장된 연결 먼저 시도
+    const { port } = window.location;
+    const isDevServer = port === '9471' || port === '5173';
+
+    // Same-origin → API에서 최신 토큰으로 직접 연결
+    if (!isDevServer && window.location.hostname) {
+      connectFromApi();
+      return;
+    }
+
+    // Dev mode → localStorage 시도
     try {
-      const saved = localStorage.getItem('rca_last_connection');
-      if (saved) {
-        const parsed = parseQRPayload(saved);
-        if (parsed) {
-          connect(parsed);
-          return;
-        }
-      }
       const directUrl = localStorage.getItem('rca_last_direct_url');
       if (directUrl) {
         connectDirect(directUrl);
@@ -209,9 +209,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     } catch {
       // ignore
     }
-    // 저장 정보 없으면 /api/connection 시도
-    connectFromApi();
-  }, [connect, connectDirect, connectFromApi]);
+  }, [connectDirect, connectFromApi]);
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
