@@ -262,7 +262,11 @@ body {
   outline-offset: 2px;
 }
 
-/* ─── Textarea auto-grow ─── */
+[contenteditable]:focus-visible {
+  outline: none;
+}
+
+/* ─── Textarea ─── */
 textarea {
   resize: none;
   field-sizing: content;

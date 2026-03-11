@@ -190,16 +190,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
   // 재연결
   const reconnect = useCallback(() => {
-    const { port } = window.location;
-    const isDevServer = port === '9471' || port === '5173';
-
-    // Same-origin → API에서 최신 토큰으로 직접 연결
-    if (!isDevServer && window.location.hostname) {
+    // API에서 최신 토큰으로 직접 연결 (Vite proxy 포함)
+    if (window.location.hostname) {
       connectFromApi();
       return;
     }
 
-    // Dev mode → localStorage 시도
+    // fallback → localStorage 시도
     try {
       const directUrl = localStorage.getItem('rca_last_direct_url');
       if (directUrl) {
@@ -252,10 +249,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       // ignore
     }
 
-    // 서버에서 직접 서빙되는 경우 자동 연결
-    const { port } = window.location;
-    const isDevServer = port === '9471' || port === '5173';
-    if (!isDevServer && window.location.hostname) {
+    // 자동 연결 (same-origin 또는 Vite proxy 경유)
+    if (window.location.hostname) {
       connectFromApi();
       return;
     }

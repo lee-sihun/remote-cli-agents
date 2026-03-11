@@ -64,15 +64,16 @@ const MessageInput = ({
   contextUsage,
 }: MessageInputProps) => {
   const [value, setValue] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [focused, setFocused] = useState(false);
+  const editorRef = useRef<HTMLDivElement>(null);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
     onSend(trimmed);
     setValue('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+    if (editorRef.current) {
+      editorRef.current.textContent = '';
     }
   }, [value, disabled, onSend]);
 
@@ -87,15 +88,16 @@ const MessageInput = ({
     [handleSend, isRunning],
   );
 
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setValue(e.target.value);
-      const ta = e.target;
-      ta.style.height = 'auto';
-      ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
-    },
-    [],
-  );
+  const handleInput = useCallback(() => {
+    const text = editorRef.current?.textContent || '';
+    setValue(text);
+  }, []);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    e.preventDefault();
+    const text = e.clipboardData.getData('text/plain');
+    document.execCommand('insertText', false, text);
+  }, []);
 
   // visibleWhen 조건 평가
   const isVisible = (opt: AgentOptionDef) => {
@@ -108,24 +110,42 @@ const MessageInput = ({
 
   const visibleInputOptions = inputOptions.filter(isVisible);
   const hasInputOptions = visibleInputOptions.length > 0;
+  const isEmpty = !value;
 
   return (
     <div className="p-3 sm:p-4">
       <div className="max-w-4xl mx-auto">
-        {/* 메인 입력 컨테이너 */}
-        <div className="rounded-2xl bg-(--input-bg) border border-(--input-border) focus-within:border-(--accent) transition-colors overflow-hidden">
-          {/* textarea */}
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            placeholder={isRunning ? 'Agent is working...' : 'Send a message...'}
-            disabled={disabled && !isRunning}
-            rows={1}
-            className="w-full px-4 pt-3 pb-1 bg-transparent border-none text-sm placeholder-(--text-muted) focus:outline-none focus:ring-0 resize-none disabled:opacity-50"
-            style={{ maxHeight: '200px' }}
-          />
+        {/* 메인 입력 컨테이너 — CSS class 대신 인라인 스타일 */}
+        <div
+          className="rounded-2xl bg-(--input-bg)"
+          style={{
+            boxShadow: focused
+              ? 'inset 0 0 0 1px var(--accent)'
+              : 'inset 0 0 0 1px var(--input-border)',
+            transition: 'box-shadow 0.15s',
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+        >
+          {/* contentEditable 입력 영역 */}
+          <div className="relative">
+            <div
+              ref={editorRef}
+              contentEditable={!(disabled && !isRunning)}
+              role="textbox"
+              aria-multiline="true"
+              aria-placeholder={isRunning ? 'Agent is working...' : 'Send a message...'}
+              onInput={handleInput}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              className="w-full px-4 pt-3 pb-2 text-sm text-(--text-primary) outline-none overflow-y-auto empty:before:content-[attr(aria-placeholder)] empty:before:text-(--text-muted) empty:before:pointer-events-none"
+              style={{ maxHeight: '400px', minHeight: '1.5em', wordBreak: 'break-word' }}
+              suppressContentEditableWarning
+            />
+            {disabled && !isRunning && (
+              <div className="absolute inset-0 opacity-50 cursor-not-allowed" />
+            )}
+          </div>
 
           {/* 하단 툴바 (모델/추론 + 전송 버튼) */}
           <div className="flex items-center justify-between px-2 pb-2">
@@ -158,7 +178,7 @@ const MessageInput = ({
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!value.trim() || disabled}
+                  disabled={isEmpty || disabled}
                   className="flex items-center justify-center w-8 h-8 rounded-full bg-(--text-primary) text-(--bg-primary) hover:opacity-80 transition-opacity disabled:opacity-20 disabled:cursor-not-allowed"
                   title="Send message"
                 >
@@ -210,7 +230,6 @@ const MessageInput = ({
             </div>
           </div>
         )}
-
       </div>
     </div>
   );

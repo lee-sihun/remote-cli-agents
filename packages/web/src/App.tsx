@@ -477,7 +477,7 @@ export default function App() {
               />
             </div>
           ) : (
-            <div className="flex-1 relative overflow-hidden">
+            <div className="flex-1 flex flex-col relative min-h-0 overflow-hidden">
               <ChatView
                 messages={currentMessages}
                 streamingContent={currentStreaming}
