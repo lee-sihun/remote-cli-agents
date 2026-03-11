@@ -42,6 +42,10 @@ const MIME_TYPES: Record<string, string> = {
 
 const MAX_WS_MESSAGE_BYTES = 1024 * 1024;
 
+export type ClientMessageParseResult =
+  | { ok: true; message: ClientMessage }
+  | { ok: false; message: string };
+
 // 서버 설정
 export interface ServerConfig {
   port: number;
@@ -176,22 +180,13 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
     });
 
     ws.on('message', async (data) => {
-      // 메시지 크기 제한 (1MB)
-      const raw = typeof data === 'string' ? data : data.toString();
-      if (Buffer.byteLength(raw, 'utf-8') > MAX_WS_MESSAGE_BYTES) {
-        sendToClient(ws, { type: 'error', message: 'Message too large' });
+      const parsed = parseClientMessagePayload(data);
+      if (!parsed.ok) {
+        sendToClient(ws, { type: 'error', message: parsed.message });
         return;
       }
 
-      let msg: ClientMessage;
-      try {
-        msg = JSON.parse(raw);
-      } catch {
-        sendToClient(ws, { type: 'error', message: 'Invalid JSON' });
-        return;
-      }
-
-      await handleClientMessage(ws, msg, adapters, cwd);
+      await handleClientMessage(ws, parsed.message, adapters, cwd);
     });
 
     ws.on('close', () => {
@@ -245,6 +240,19 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
       });
     },
   };
+}
+
+export function parseClientMessagePayload(data: string | Buffer): ClientMessageParseResult {
+  const raw = typeof data === 'string' ? data : data.toString();
+  if (Buffer.byteLength(raw, 'utf-8') > MAX_WS_MESSAGE_BYTES) {
+    return { ok: false, message: 'Message too large' };
+  }
+
+  try {
+    return { ok: true, message: JSON.parse(raw) as ClientMessage };
+  } catch {
+    return { ok: false, message: 'Invalid JSON' };
+  }
 }
 
 // 어댑터 초기화 및 설치된 에이전트 감지
