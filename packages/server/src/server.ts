@@ -363,6 +363,21 @@ async function handleClientMessage(
       break;
     }
 
+    case 'get_thread_state': {
+      const adapter = adapters.get(msg.agentType);
+      const messages = store.loadMessages(msg.threadId);
+      const streaming = adapter?.getStreamingState?.(msg.threadId) || undefined;
+      const agentStatus = adapter?.getStatus();
+      sendToClient(ws, {
+        type: 'thread_state',
+        threadId: msg.threadId,
+        messages,
+        streaming: streaming || undefined,
+        agentStatus,
+      });
+      break;
+    }
+
     case 'send_message': {
       const adapter = adapters.get(msg.agentType);
       if (!adapter) {

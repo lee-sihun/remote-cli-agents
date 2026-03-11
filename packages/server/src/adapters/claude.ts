@@ -9,7 +9,7 @@ import type {
   ToolCall,
   ThreadSummary,
 } from '@rca/shared';
-import type { AgentAdapter, AgentEventHandler } from './types.js';
+import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
 
 // Claude stream-json 이벤트 타입
@@ -60,6 +60,8 @@ export class ClaudeAdapter implements AgentAdapter {
     agent: 'claude',
     state: 'idle',
   };
+  // per-thread 스트리밍 버퍼 (재연결 동기화용)
+  private streamingBuffers = new Map<string, { content: string; toolCalls: ToolCall[] }>();
 
   async start(config: AgentConfig): Promise<void> {
     this.config = config;
@@ -115,10 +117,10 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     if (existingThread && existingThread.sessionId) {
-      // 기존 스레드에 재연결 (--resume)
+      console.log(`[claude] Resuming session ${existingThread.sessionId} for thread ${tid}`);
       this.spawnClaude(tid, message, existingThread.sessionId, existingThread.cwd);
     } else {
-      // 새 스레드 시작
+      console.log(`[claude] Starting new session for thread ${tid}`);
       this.spawnClaude(tid, message, undefined, this.config?.cwd);
     }
   }
@@ -136,6 +138,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
   getStatus(): AgentStatus {
     return { ...this.status };
+  }
+
+  getStreamingState(threadId: string): ThreadStreamingState | null {
+    return this.streamingBuffers.get(threadId) || null;
   }
 
   async getThreads(): Promise<ThreadSummary[]> {
@@ -246,6 +252,9 @@ export class ClaudeAdapter implements AgentAdapter {
     this.saveThreadMeta(threadInfo);
     this.updateStatus('running', threadId);
 
+    // 스트리밍 버퍼 초기화
+    this.streamingBuffers.set(threadId, { content: '', toolCalls: [] });
+
     this.emit({
       type: 'message_start',
       threadId,
@@ -291,9 +300,11 @@ export class ClaudeAdapter implements AgentAdapter {
             } | undefined;
 
             if (msg?.content) {
+              const buf = this.streamingBuffers.get(threadId);
               for (const block of msg.content) {
                 if (block.type === 'text' && block.text) {
                   accumulatedText += block.text;
+                  if (buf) buf.content += block.text;
                   this.emit({
                     type: 'message_delta',
                     threadId,
@@ -301,13 +312,13 @@ export class ClaudeAdapter implements AgentAdapter {
                     content: block.text,
                   });
                 } else if (block.type === 'tool_use' && block.name) {
-                  // assistant 이벤트 내 tool_use 블록
                   currentToolCall = {
                     id: block.id || randomUUID(),
                     name: block.name,
                     input: block.input || {},
                     status: 'running',
                   };
+                  if (buf) buf.toolCalls.push(currentToolCall);
                   this.emit({
                     type: 'tool_start',
                     threadId,
@@ -332,10 +343,16 @@ export class ClaudeAdapter implements AgentAdapter {
             } | undefined;
 
             if (userMsg?.content) {
+              const buf = this.streamingBuffers.get(threadId);
               for (const block of userMsg.content) {
                 if (block.type === 'tool_result' && currentToolCall) {
                   currentToolCall.output = block.content || '';
                   currentToolCall.status = block.is_error ? 'failed' : 'completed';
+                  // 버퍼 내 도구 상태 업데이트
+                  if (buf) {
+                    const idx = buf.toolCalls.findIndex((t) => t.id === currentToolCall!.id);
+                    if (idx >= 0) buf.toolCalls[idx] = { ...currentToolCall };
+                  }
                   this.emit({
                     type: 'tool_complete',
                     threadId,
@@ -353,6 +370,7 @@ export class ClaudeAdapter implements AgentAdapter {
             // 세션 ID 저장 (재연결용)
             if (event.session_id) {
               threadInfo.sessionId = event.session_id;
+              console.log(`[claude] Session ID saved: ${event.session_id} for thread ${threadId}`);
             }
 
             if (event.model) {
@@ -373,6 +391,9 @@ export class ClaudeAdapter implements AgentAdapter {
               const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
               this.status.contextUsage = { used: totalTokens, total: contextWindow, percentage };
             }
+
+            // 스트리밍 버퍼 정리
+            this.streamingBuffers.delete(threadId);
 
             // 최종 메시지 생성 (accumulatedText 없으면 result 필드 사용)
             messageCompleted = true;
@@ -424,6 +445,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // 프로세스 종료 처리
     proc.on('close', (code) => {
       clearTimeout(processTimeout);
+      this.streamingBuffers.delete(threadId);
 
       if (code !== 0 && code !== null) {
         this.emit({

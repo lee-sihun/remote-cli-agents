@@ -92,10 +92,22 @@ export default function App() {
   const wsRef = useRef(ws);
   wsRef.current = ws;
 
-  // Request initial data on connect
+  // Request initial data on connect + 활성 스레드 자동 복원
   useEffect(() => {
     if (ws.status === 'connected') {
       ws.send({ type: 'list_agents' });
+
+      // 저장된 activeAgent/activeThread 복원
+      const s = storeRef.current;
+      if (s.activeAgent) {
+        ws.send({ type: 'list_threads', agentType: s.activeAgent });
+        ws.send({ type: 'select_agent', agentType: s.activeAgent });
+
+        // 활성 스레드 상태 복원 (메시지 + 스트리밍 + 에이전트 상태)
+        if (s.activeThread) {
+          ws.send({ type: 'get_thread_state', agentType: s.activeAgent, threadId: s.activeThread });
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.status]);
@@ -140,7 +152,8 @@ export default function App() {
   const agentStatus = store.activeAgent
     ? store.agentStatuses.get(store.activeAgent)
     : undefined;
-  const isRunning = agentStatus?.state === 'running';
+  const isRunning = agentStatus?.state === 'running'
+    && agentStatus?.activeThread === store.activeThread;
 
   // 컨텍스트 사용량: agentStatus 우선, 없으면 스레드 저장값 fallback
   const activeThreadSummary = store.activeAgent && store.activeThread
@@ -302,7 +315,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-(--bg-primary)">
+    <div className="flex overflow-hidden bg-(--bg-primary)" style={{ height: '100dvh' }}>
       {/* Sidebar overlay (mobile) */}
       {sidebarOpen && (
         <div

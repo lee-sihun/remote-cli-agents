@@ -56,15 +56,26 @@ function genId(): string {
   return `local-${Date.now()}-${++messageIdCounter}`;
 }
 
+// localStorage 헬퍼
+function loadSaved<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch { return fallback; }
+}
+function saveTo(key: string, value: unknown): void {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   connectionStatus: 'disconnected',
 
   agents: [],
   agentStatuses: new Map(),
-  activeAgent: null,
+  activeAgent: loadSaved<AgentType | null>('rca_active_agent', null),
 
   threads: new Map(),
-  activeThread: null,
+  activeThread: loadSaved<string | null>('rca_active_thread', null),
 
   messages: new Map(),
   streamingContent: new Map(),
@@ -81,9 +92,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
 
-  setActiveAgent: (agent) => set({ activeAgent: agent }),
+  setActiveAgent: (agent) => {
+    saveTo('rca_active_agent', agent);
+    set({ activeAgent: agent });
+  },
 
-  setActiveThread: (threadId) => set({ activeThread: threadId }),
+  setActiveThread: (threadId) => {
+    saveTo('rca_active_thread', threadId);
+    set({ activeThread: threadId });
+  },
 
   setAgentSettings: (agent, settings) => {
     const map = new Map(get().agentSettings);
@@ -137,6 +154,36 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         const messages = new Map(state.messages);
         messages.set(msg.threadId, msg.messages);
         set({ messages });
+        break;
+      }
+
+      case 'thread_state': {
+        // 메시지 복원
+        const messages = new Map(state.messages);
+        messages.set(msg.threadId, msg.messages);
+        const updates: Partial<AgentState> = { messages };
+
+        // 스트리밍 상태 복원
+        if (msg.streaming) {
+          const sc = new Map(state.streamingContent);
+          sc.set(msg.threadId, msg.streaming.content);
+          updates.streamingContent = sc;
+
+          if (msg.streaming.toolCalls.length > 0) {
+            const atc = new Map(state.activeToolCalls);
+            atc.set(msg.threadId, msg.streaming.toolCalls);
+            updates.activeToolCalls = atc;
+          }
+        }
+
+        // 에이전트 상태 복원
+        if (msg.agentStatus) {
+          const statuses = new Map(state.agentStatuses);
+          statuses.set(msg.agentStatus.agent, msg.agentStatus);
+          updates.agentStatuses = statuses;
+        }
+
+        set(updates);
         break;
       }
 
@@ -276,17 +323,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           case 'status_change': {
             const statuses = new Map(state.agentStatuses);
             statuses.set(event.agentType, event.status);
-
-            // If a thread became active, set it
-            const updates: Partial<AgentState> = { agentStatuses: statuses };
-            if (
-              event.status.activeThread &&
-              event.agentType === state.activeAgent
-            ) {
-              updates.activeThread = event.status.activeThread;
-            }
-
-            set(updates);
+            set({ agentStatuses: statuses });
             break;
           }
 

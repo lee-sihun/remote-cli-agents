@@ -56,18 +56,42 @@
   box-sizing: border-box;
 }
 
-html, body, #root {
+html {
   height: 100%;
   margin: 0;
   padding: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior-y: contain;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   background-color: var(--bg-primary);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100dvh;
+  height: 100%; /* fallback */
+  margin: 0;
+  padding: 0;
+}
+
+/* iOS PWA standalone 모드 */
+@media (display-mode: standalone) {
+  body {
+    position: fixed;
+    width: 100%;
+  }
 }
 
 /* ─── Scrollbar ─── */

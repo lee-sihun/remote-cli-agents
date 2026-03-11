@@ -9,7 +9,7 @@ import type {
   ToolCall,
   ThreadSummary,
 } from '@rca/shared';
-import type { AgentAdapter, AgentEventHandler } from './types.js';
+import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
 
 // JSON-RPC 요청
@@ -152,6 +152,13 @@ export class CodexAdapter implements AgentAdapter {
 
   getStatus(): AgentStatus {
     return { ...this.status };
+  }
+
+  getStreamingState(threadId: string): ThreadStreamingState | null {
+    const content = this.accumulatedText.get(threadId);
+    if (content === undefined) return null;
+    const tool = this.currentToolCalls.get(threadId);
+    return { content, toolCalls: tool ? [tool] : [] };
   }
 
   async getThreads(): Promise<ThreadSummary[]> {

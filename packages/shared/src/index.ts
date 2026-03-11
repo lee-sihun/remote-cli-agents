@@ -187,6 +187,7 @@ export type ClientMessage =
   | { type: 'approve'; agentType: AgentType; threadId: string; toolCallId: string; approved: boolean }
   | { type: 'list_threads'; agentType: AgentType }
   | { type: 'get_thread_messages'; agentType: AgentType; threadId: string }
+  | { type: 'get_thread_state'; agentType: AgentType; threadId: string }
   | { type: 'list_agents' }
   | { type: 'select_agent'; agentType: AgentType; config?: AgentConfig }
   | { type: 'pty_input'; agentType: AgentType; threadId: string; data: string }
@@ -203,6 +204,7 @@ export type ServerMessage =
   | { type: 'agents_list'; agents: AgentInfo[] }
   | { type: 'threads_list'; agentType: AgentType; threads: ThreadSummary[] }
   | { type: 'thread_messages'; threadId: string; messages: AgentMessage[] }
+  | { type: 'thread_state'; threadId: string; messages: AgentMessage[]; streaming?: { content: string; toolCalls: ToolCall[] }; agentStatus?: AgentStatus }
   | { type: 'connection_status'; status: 'connected' | 'disconnected' | 'reconnecting' }
   | { type: 'git_result'; action: string; result: unknown }
   | { type: 'file_list_result'; path: string; entries: FileEntry[] }
