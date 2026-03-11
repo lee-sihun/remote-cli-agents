@@ -16,6 +16,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:claude": "node scripts/claudeSmokeTest.mjs",
+    "test:pinchtab": "node scripts/pinchtabE2e.mjs",
+    "test:windows-kill": "node scripts/windowsShellKillProbe.mjs",
     "postbuild": "node -e \"const fs=require('fs');const p=require('path');const s=p.join('packages','web','dist');const d=p.join('packages','server','web');fs.cpSync(s,d,{recursive:true,force:true});console.log('Web client copied to server/web/')\"",
     "start": "npm run start -w packages/server",
     "serve": "npx tsx packages/server/src/index.ts"

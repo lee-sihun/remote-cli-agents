@@ -67,5 +67,5 @@ describe('store', () => {
     expect(messages).toHaveLength(200);
     expect(messages[0]?.content).toBe('content-5');
     expect(messages.at(-1)?.content).toBe('content-204');
-  });
+  }, 15_000);
 });

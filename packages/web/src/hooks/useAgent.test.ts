@@ -151,4 +151,57 @@ describe('useAgentStore', () => {
     expect(useAgentStore.getState().pendingApprovals).toHaveLength(1);
     expect(useAgentStore.getState().pendingApprovals[0]?.id).toBe('tool-1');
   });
+
+  it('clears stale running state on reconnect without message_complete', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      streamingContent: new Map([['thread-1', 'partial response']]),
+      activeToolCalls: new Map([['thread-1', [baseToolCall]]]),
+      pendingApprovals: [{
+        ...baseToolCall,
+        status: 'requires_approval',
+        threadId: 'thread-1',
+        agentType: 'claude',
+      }],
+      agentStatuses: new Map([['claude', {
+        agent: 'claude',
+        state: 'running',
+        activeThread: 'thread-1',
+      }]]),
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'connection_status',
+      status: 'connected',
+    });
+
+    expect(useAgentStore.getState().streamingContent.size).toBe(0);
+    expect(useAgentStore.getState().activeToolCalls.size).toBe(0);
+    expect(useAgentStore.getState().pendingApprovals).toHaveLength(0);
+    expect(useAgentStore.getState().agentStatuses.size).toBe(0);
+  });
+
+  it('keeps streaming content isolated by thread while another thread is active', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      activeThread: 'thread-2',
+      streamingContent: new Map([['thread-2', 'existing stream']]),
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'message_delta',
+        threadId: 'thread-1',
+        agentType: 'claude',
+        content: 'background stream',
+      },
+    });
+
+    expect(useAgentStore.getState().streamingContent.get('thread-1')).toBe('background stream');
+    expect(useAgentStore.getState().streamingContent.get('thread-2')).toBe('existing stream');
+    expect(useAgentStore.getState().activeThread).toBe('thread-2');
+  });
 });

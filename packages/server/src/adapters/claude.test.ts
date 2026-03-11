@@ -12,6 +12,7 @@ interface FakeChildProcess extends EventEmitter {
   exitCode: number | null;
   killed: boolean;
   kill: ReturnType<typeof vi.fn>;
+  pid?: number;
   signalCode: NodeJS.Signals | null;
   stderr: PassThrough;
   stdin: FakeStdin;
@@ -99,6 +100,7 @@ describe('ClaudeAdapter', () => {
 
   it('writes prompt to stdin and closes it in -p mode', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9001;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -112,6 +114,7 @@ describe('ClaudeAdapter', () => {
 
   it('passes effort level through the official CLI flag', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9002;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -137,6 +140,7 @@ describe('ClaudeAdapter', () => {
 
   it('removes CLAUDECODE from the child environment', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9003;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -162,6 +166,8 @@ describe('ClaudeAdapter', () => {
   it('kills the previous process and ignores its late close event on same thread', async () => {
     const firstProc = createFakeChildProcess();
     const secondProc = createFakeChildProcess();
+    firstProc.pid = 9101;
+    secondProc.pid = 9102;
     childProcessMock.spawn
       .mockReturnValueOnce(firstProc)
       .mockReturnValueOnce(secondProc);
@@ -177,10 +183,14 @@ describe('ClaudeAdapter', () => {
     adapter.sendMessage('thread-same', 'first');
     adapter.sendMessage('thread-same', 'second');
 
-    expect(firstProc.kill).toHaveBeenCalledTimes(1);
     if (process.platform === 'win32') {
-      expect(firstProc.kill).toHaveBeenCalledWith();
+      expect(childProcessMock.execFile).toHaveBeenCalledWith(
+        'taskkill',
+        ['/PID', '9101', '/T', '/F'],
+        expect.any(Function),
+      );
     } else {
+      expect(firstProc.kill).toHaveBeenCalledTimes(1);
       expect(firstProc.kill).toHaveBeenCalledWith('SIGTERM');
     }
     expect(childProcessMock.spawn).toHaveBeenCalledTimes(2);
@@ -195,6 +205,8 @@ describe('ClaudeAdapter', () => {
   it('keeps running state until all active threads finish and tracks the last active thread', async () => {
     const firstProc = createFakeChildProcess();
     const secondProc = createFakeChildProcess();
+    firstProc.pid = 9201;
+    secondProc.pid = 9202;
     childProcessMock.spawn
       .mockReturnValueOnce(firstProc)
       .mockReturnValueOnce(secondProc);
@@ -222,6 +234,7 @@ describe('ClaudeAdapter', () => {
 
   it('parses assistant, tool and result events and stores session/context metadata', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9301;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -284,6 +297,7 @@ describe('ClaudeAdapter', () => {
       usage: {
         input_tokens: 100,
         cache_read_input_tokens: 50,
+        cache_creation_input_tokens: 10,
         output_tokens: 25,
       },
       modelUsage: {
@@ -305,7 +319,7 @@ describe('ClaudeAdapter', () => {
     expect(messageComplete && messageComplete.type === 'message_complete' ? messageComplete.message.reasoning : null).toBe('analyzing');
     expect(messageComplete && messageComplete.type === 'message_complete' ? messageComplete.message.toolCalls?.[0]?.status : null).toBe('completed');
     expect(adapter.getStatus().contextUsage).toEqual({
-      used: 175,
+      used: 185,
       total: 1_000_000,
       percentage: 0,
     });
@@ -313,7 +327,7 @@ describe('ClaudeAdapter', () => {
     const threads = await adapter.getThreads();
     expect(threads[0]?.sessionId).toBe('session-1');
     expect(threads[0]?.contextUsage).toEqual({
-      used: 175,
+      used: 185,
       total: 1_000_000,
       percentage: 0,
     });
@@ -323,6 +337,8 @@ describe('ClaudeAdapter', () => {
   it('passes --resume on subsequent messages after session id is captured', async () => {
     const firstProc = createFakeChildProcess();
     const secondProc = createFakeChildProcess();
+    firstProc.pid = 9401;
+    secondProc.pid = 9402;
     childProcessMock.spawn
       .mockReturnValueOnce(firstProc)
       .mockReturnValueOnce(secondProc);
@@ -354,6 +370,7 @@ describe('ClaudeAdapter', () => {
 
   it('persists thread metadata on start and after result completion', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9501;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -415,6 +432,7 @@ describe('ClaudeAdapter', () => {
     }]);
 
     const proc = createFakeChildProcess();
+    proc.pid = 9601;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -438,6 +456,7 @@ describe('ClaudeAdapter', () => {
 
   it('avoids duplicate error events when stderr is followed by a non-zero close', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9701;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -462,6 +481,7 @@ describe('ClaudeAdapter', () => {
 
   it('emits fallback message and clears streaming state on spawn error', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9801;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -486,8 +506,34 @@ describe('ClaudeAdapter', () => {
     expect(events.some((event) => event.type === 'error' && event.error.includes('spawn failed'))).toBe(true);
   });
 
+  it('terminates long-running processes through the timeout path', async () => {
+    vi.useFakeTimers();
+
+    const proc = createFakeChildProcess();
+    proc.pid = 9851;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-timeout', 'hello');
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+    if (process.platform === 'win32') {
+      expect(childProcessMock.execFile).toHaveBeenCalledWith(
+        'taskkill',
+        ['/PID', '9851', '/T', '/F'],
+        expect.any(Function),
+      );
+    } else {
+      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+    }
+  });
+
   it('creates a fallback assistant message when the process closes before result', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9901;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -524,8 +570,40 @@ describe('ClaudeAdapter', () => {
     }));
   });
 
+  it('persists the last assistant message on non-zero process close', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9902;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-close-error', 'hello');
+
+    proc.stdout.write(`${JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'partial error output' }],
+      },
+    })}\n`);
+    await flushStreamEvents();
+    proc.emit('close', 2);
+    await flushStreamEvents();
+
+    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-close-error', expect.objectContaining({
+      role: 'assistant',
+      content: 'partial error output',
+    }));
+    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
+      id: 'thread-close-error',
+      lastMessage: 'partial error output',
+      messageCount: 2,
+    }));
+  });
+
   it('completes pending tool calls from result even when tool_result is missing', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9911;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -572,6 +650,7 @@ describe('ClaudeAdapter', () => {
 
   it('falls back to the latest tool call id when tool_result omits tool_use_id', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9921;
     childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
 
@@ -613,6 +692,7 @@ describe('ClaudeAdapter', () => {
 
   it('logs handler errors without breaking remaining event delivery', async () => {
     const proc = createFakeChildProcess();
+    proc.pid = 9931;
     childProcessMock.spawn.mockReturnValue(proc);
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { ClaudeAdapter } = await import('./claude.ts');
@@ -634,5 +714,21 @@ describe('ClaudeAdapter', () => {
 
     expect(received.some((event) => event.type === 'error')).toBe(true);
     expect(consoleErrorSpy).toHaveBeenCalledWith('[claude] Event handler error:', expect.any(Error));
+  });
+
+  it('passes prompts through stdin instead of shell arguments on shell-sensitive input', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9941;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const dangerousPrompt = 'echo hacked && del C:\\temp\\*';
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-shell-safe', dangerousPrompt);
+
+    const spawnArgs = childProcessMock.spawn.mock.calls[0]?.[1] as string[];
+    expect(spawnArgs).not.toContain(dangerousPrompt);
+    expect(proc.stdin.write).toHaveBeenCalledWith(dangerousPrompt);
   });
 });

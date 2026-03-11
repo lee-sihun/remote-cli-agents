@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const RUN_TIMEOUT_MS = 30_000;
+const RUN_TIMEOUT_MS = 45_000;
 
 const parseStreamJson = (stdout) =>
   stdout
@@ -12,6 +15,7 @@ const parseStreamJson = (stdout) =>
 const collectClaudeRun = (prompt, args = [], options = {}) =>
   new Promise((resolve, reject) => {
     const proc = spawn('claude', ['--output-format', 'stream-json', '--verbose', ...args, '-p'], {
+      cwd: options.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: process.platform === 'win32',
     });
@@ -63,20 +67,35 @@ const collectClaudeRun = (prompt, args = [], options = {}) =>
     proc.stdin.end();
   });
 
-const runClaudeStreamJson = async (prompt, args = []) => {
-  const result = await collectClaudeRun(prompt, args);
+const runClaudeStreamJson = async (prompt, args = [], options = {}) => {
+  const result = await collectClaudeRun(prompt, args, options);
   return result.events;
 };
 
-const runClaudeAllowFailure = (prompt, args = []) =>
-  collectClaudeRun(prompt, args, { allowFailure: true });
+const runClaudeAllowFailure = (prompt, args = [], options = {}) =>
+  collectClaudeRun(prompt, args, { ...options, allowFailure: true });
 
 const getEvent = (events, type) => events.find((event) => event.type === type);
+
+const getAssistantText = (events) =>
+  events
+    .filter((event) => event.type === 'assistant')
+    .flatMap((event) => event.message?.content || [])
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('');
 
 const assert = (condition, message) => {
   if (!condition) {
     throw new Error(message);
   }
+};
+
+const createToolFlowWorkspace = () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'rca-claude-tool-flow-'));
+  writeFileSync(join(cwd, 'a.txt'), 'ALPHA');
+  writeFileSync(join(cwd, 'b.txt'), 'BETA');
+  return cwd;
 };
 
 const main = async () => {
@@ -88,11 +107,19 @@ const main = async () => {
   assert(getEvent(basicEvents, 'assistant'), 'assistant 이벤트가 없습니다.');
   assert(getEvent(basicEvents, 'rate_limit_event'), 'rate_limit_event 이벤트가 없습니다.');
   assert(basicResult?.result, 'result 이벤트가 없습니다.');
+  assert(getAssistantText(basicEvents) === basicResult.result, 'assistant text와 result.result가 일치하지 않습니다.');
   results.push(`basic-stream-json: ${basicResult.result}`);
+  results.push('assistant-text-vs-result-basic: ok');
 
   const partialEvents = await runClaudeStreamJson('Reply with exactly OK.', ['--include-partial-messages']);
   assert(partialEvents.some((event) => event.type === 'stream_event' && event.event?.type === 'content_block_delta'), 'partial stream delta 이벤트가 없습니다.');
   results.push('partial-stream-events: ok');
+
+  const longPromptEvents = await runClaudeStreamJson(
+    `Reply with exactly LONG_OK. Ignore the filler below.\n${'x'.repeat(70_000)}`,
+  );
+  assert(getEvent(longPromptEvents, 'result')?.result?.trim() === 'LONG_OK', '긴 프롬프트 처리 결과가 예상과 다릅니다.');
+  results.push('long-prompt: ok');
 
   const planEvents = await runClaudeStreamJson('Reply with exactly OK.', ['--permission-mode', 'plan']);
   assert(getEvent(planEvents, 'system')?.permissionMode === 'plan', 'plan permission mode가 반영되지 않았습니다.');
@@ -114,6 +141,10 @@ const main = async () => {
   assert(String(getEvent(haikuEvents, 'system')?.model || '').includes('haiku'), 'haiku 모델 매핑이 예상과 다릅니다.');
   results.push(`model-haiku: ${getEvent(haikuEvents, 'system')?.model}`);
 
+  const haikuEffortEvents = await runClaudeStreamJson('Reply with exactly HAIKU_EFFORT_OK.', ['--model', 'haiku', '--effort', 'high']);
+  assert(getEvent(haikuEffortEvents, 'result')?.result?.trim() === 'HAIKU_EFFORT_OK', 'haiku + effort 조합 결과가 예상과 다릅니다.');
+  results.push('haiku-effort: accepted');
+
   const opusEvents = await runClaudeStreamJson('Reply with exactly OK.', ['--model', 'opus']);
   assert(String(getEvent(opusEvents, 'system')?.model || '').includes('opus'), 'opus 모델 매핑이 예상과 다릅니다.');
   results.push(`model-opus: ${getEvent(opusEvents, 'system')?.model}`);
@@ -128,6 +159,24 @@ const main = async () => {
   assert(String(sonnet1mSystem?.model || '').includes('[1m]'), 'sonnet[1m] 모델 문자열이 init 이벤트에 반영되지 않았습니다.');
   assert(sonnet1mResult, 'sonnet[1m] 실행에서 result 이벤트가 없습니다.');
   results.push(`model-sonnet[1m]: ${sonnet1mSystem?.model} (code=${sonnet1mRun.code})`);
+
+  const toolFlowCwd = createToolFlowWorkspace();
+  const toolFlowEvents = await runClaudeStreamJson(
+    'Read a.txt and b.txt, then reply with exactly "ALPHA,BETA".',
+    ['--dangerously-skip-permissions'],
+    { cwd: toolFlowCwd },
+  );
+  const toolFlowTypes = toolFlowEvents.map((event) => event.type);
+  const assistantText = getAssistantText(toolFlowEvents);
+  const toolFlowResult = getEvent(toolFlowEvents, 'result')?.result;
+  assert(toolFlowTypes.indexOf('tool_result') === -1, 'tool_result는 user 이벤트 내부 블록으로만 와야 합니다.');
+  assert(toolFlowEvents.filter((event) => event.type === 'assistant').some((event) =>
+    event.message?.content?.some((block) => block.type === 'tool_use')), 'tool_use 이벤트가 없습니다.');
+  assert(toolFlowEvents.filter((event) => event.type === 'user').length >= 2, 'tool_result user 이벤트가 충분하지 않습니다.');
+  assert(assistantText === 'ALPHA,BETA', `assistant text 누적 결과가 예상과 다릅니다: ${assistantText}`);
+  assert(toolFlowResult === assistantText, `result.result와 assistant text가 다릅니다: ${toolFlowResult} vs ${assistantText}`);
+  results.push('tool-flow-order: ok');
+  results.push('assistant-text-vs-result: ok');
 
   const firstSessionEvents = await runClaudeStreamJson('Remember this exact code: 314159. Reply exactly STORED.');
   const sessionId = getEvent(firstSessionEvents, 'result')?.session_id;
