@@ -35,7 +35,7 @@
 - [x] `assistant` 이벤트: `message.content` 배열에서 text, thinking, tool_use 추출 정확성
 - [x] `user` 이벤트: `tool_result` 매칭이 `tool_use_id` 기반으로 정확한지
 - [x] `result` 이벤트: `session_id`, `model`, `cost_usd`, `usage` 추출 정확성
-- [ ] 미처리 이벤트 타입: 실환경에서 `system`, `rate_limit_event` 확인됨. 어댑터 처리 필요 여부 검토
+- [ ] 미처리 이벤트 타입: `system`은 처리 추가. `rate_limit_event`는 실환경 확인됐고 현재는 명시적으로 무시
 - [x] Claude Code가 `--output-format stream-json`에서 실제로 어떤 이벤트를 보내는지 CLI 직접 검증
 
 ### 2-2. 텍스트 델타 vs 전체 텍스트
