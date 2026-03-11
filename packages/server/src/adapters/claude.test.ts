@@ -108,6 +108,27 @@ describe('ClaudeAdapter', () => {
     expect(proc.stdin.end).toHaveBeenCalledTimes(1);
   });
 
+  it('passes effort level through the official CLI flag', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({
+      type: 'claude',
+      cwd: 'C:/workspace',
+      model: 'sonnet',
+      ...({ effortLevel: 'high' } as Record<string, string>),
+    });
+    adapter.sendMessage('thread-effort', 'hello');
+
+    expect(childProcessMock.spawn).toHaveBeenCalledWith(
+      'claude',
+      expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '-p']),
+      expect.any(Object),
+    );
+  });
+
   it('kills the previous process and ignores its late close event on same thread', async () => {
     const firstProc = createFakeChildProcess();
     const secondProc = createFakeChildProcess();
