@@ -37,6 +37,38 @@ const runClaudeJson = (prompt, args = []) =>
     proc.stdin.end();
   });
 
+const runClaudeExpectFailure = (prompt, args = []) =>
+  new Promise((resolve, reject) => {
+    const proc = spawn('claude', ['-p', '--output-format', 'json', '--verbose', ...args], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code === 0) {
+        reject(new Error(`claude가 실패해야 하는 테스트에서 성공했습니다: ${stdout}`));
+        return;
+      }
+
+      resolve((stderr || stdout).trim());
+    });
+
+    proc.stdin.write(prompt);
+    proc.stdin.end();
+  });
+
 const getEvent = (events, type) => events.find((event) => event.type === type);
 
 const assert = (condition, message) => {
@@ -82,6 +114,10 @@ const main = async () => {
   const resumedResult = getEvent(resumedEvents, 'result')?.result?.trim();
   assert(resumedResult === '314159', `--resume 결과가 예상과 다릅니다: ${resumedResult}`);
   results.push(`resume-session: ${resumedResult}`);
+
+  const invalidResume = await runClaudeExpectFailure('Reply with exactly OK.', ['--resume', 'invalid-session-id']);
+  assert(invalidResume.includes('valid UUID'), `잘못된 session ID 에러 메시지가 예상과 다릅니다: ${invalidResume}`);
+  results.push('resume-invalid-session: ok');
 
   console.log(results.join('\n'));
 };
