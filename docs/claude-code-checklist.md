@@ -3,7 +3,7 @@
 > 작성일: 2026-03-11
 > 대상: `packages/server/src/adapters/claude.ts`, `server.ts`, `store.ts`, `packages/web/src/`
 > 목적: Codex 등 외부 검증용
-> 비고: `[x]`는 현재 코드, 자동화 테스트(Vitest), 또는 실환경 `claude` CLI 검증으로 확인한 항목
+> 비고: `[x]`는 현재 코드, 자동화 테스트(Vitest), 실환경 `claude` CLI, 또는 PinchTab 기반 브라우저 검증으로 확인한 항목
 > 실행 메모: 실환경 스모크 테스트는 `npm run test:claude`
 
 ---
@@ -109,7 +109,7 @@
 ### 6-1. 스레드 목록 복원
 - [x] 서버 시작 시 `store.loadThreads('claude')` → `threads` Map 복원
 - [x] 클라이언트 연결 시 `list_threads` → `getThreads()` 반환값에 모든 스레드 포함
-- [ ] 클라이언트 새로고침 시 localStorage `activeAgent`/`activeThread` → `get_thread_state` 흐름
+- [x] 클라이언트 새로고침 시 localStorage `activeAgent`/`activeThread` → `get_thread_state` 흐름
 
 ### 6-2. 스트리밍 상태 동기화
 - [x] `streamingBuffers`에 현재 진행 중인 content + toolCalls 정확히 추적
@@ -162,7 +162,7 @@
 ## 9. 클라이언트 측 (useAgent.ts, App.tsx)
 
 ### 9-1. 스레드 전환
-- [ ] `handleSelectThread` → `get_thread_state` 전송 → 메시지/스트리밍/상태 복원
+- [x] `handleSelectThread` → `get_thread_state` 전송 → 메시지/스트리밍/상태 복원
 - [x] 이전 스레드의 스트리밍 데이터가 새 스레드 선택 후에도 남아 있지 않는지
 - [x] `streamingContent` / `activeToolCalls` 정리 시점
 
