@@ -40,6 +40,8 @@ const MIME_TYPES: Record<string, string> = {
   '.map': 'application/json',
 };
 
+const MAX_WS_MESSAGE_BYTES = 1024 * 1024;
+
 // 서버 설정
 export interface ServerConfig {
   port: number;
@@ -176,7 +178,7 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
     ws.on('message', async (data) => {
       // 메시지 크기 제한 (1MB)
       const raw = typeof data === 'string' ? data : data.toString();
-      if (raw.length > 1024 * 1024) {
+      if (Buffer.byteLength(raw, 'utf-8') > MAX_WS_MESSAGE_BYTES) {
         sendToClient(ws, { type: 'error', message: 'Message too large' });
         return;
       }
@@ -396,7 +398,8 @@ async function handleClientMessage(
         return;
       }
 
-      adapter.sendMessage(msg.threadId || randomUUID(), msg.content);
+      const threadId = msg.threadId || randomUUID();
+      adapter.sendMessage(threadId, msg.content);
       break;
     }
 
@@ -434,13 +437,16 @@ async function handleClientMessage(
       if (msg.config) {
         const status = adapter.getStatus();
         if (status.state === 'running') {
-          // 실행 중: config만 갱신 (다음 메시지부터 적용, 프로세스 유지)
-          console.log(`[server] Agent ${msg.agentType} running, config updated for next message`);
-          await adapter.start(msg.config);
-        } else {
-          await adapter.stop();
-          await adapter.start(msg.config);
+          sendToClient(ws, {
+            type: 'error',
+            message: `Cannot change ${msg.agentType} settings while the agent is running`,
+            code: 'AGENT_BUSY',
+          });
+          return;
         }
+
+        await adapter.stop();
+        await adapter.start(msg.config);
       }
 
       const agents = await getAgentsList(adapters);

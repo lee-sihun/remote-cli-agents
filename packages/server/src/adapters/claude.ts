@@ -41,6 +41,7 @@ interface ClaudeStreamEvent {
 interface ThreadInfo {
   id: string;
   process: ChildProcess;
+  runId?: string;
   sessionId?: string;
   title: string;
   messages: AgentMessage[];
@@ -91,7 +92,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // 활성 프로세스만 종료 (스레드 데이터는 유지)
     for (const [, thread] of this.threads) {
       if (thread.timeout) clearTimeout(thread.timeout);
-      if (thread.process && !thread.process.killed) {
+      if (this.isProcessActive(thread.process)) {
         if (process.platform === 'win32') {
           thread.process.kill();
         } else {
@@ -116,7 +117,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const existingThread = this.threads.get(tid);
 
     // 기존 프로세스가 실행 중이면 종료 후 재시작
-    if (existingThread?.process && !existingThread.process.killed) {
+    if (existingThread && this.isProcessActive(existingThread.process)) {
       console.log(`[claude] Killing existing process for thread ${tid} before new message`);
       if (existingThread.timeout) clearTimeout(existingThread.timeout);
       if (process.platform === 'win32') {
@@ -142,7 +143,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   interrupt(threadId: string): void {
     const thread = this.threads.get(threadId);
-    if (thread?.process && !thread.process.killed) {
+    if (thread && this.isProcessActive(thread.process)) {
       if (process.platform === 'win32') {
         thread.process.kill();
       } else {
@@ -153,7 +154,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   approve(threadId: string, _toolCallId: string, approved: boolean): void {
     const thread = this.threads.get(threadId);
-    if (!thread?.process || thread.process.killed) return;
+    if (!thread || !this.isProcessActive(thread.process)) return;
 
     // Claude Code stdin으로 승인/거부 응답 전달
     const response = approved ? 'y\n' : 'n\n';
@@ -251,10 +252,12 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const now = Date.now();
     const existingThread = this.threads.get(threadId);
+    const runId = randomUUID();
 
     const threadInfo: ThreadInfo = {
       id: threadId,
       process: proc,
+      runId,
       sessionId: existingThread?.sessionId || sessionId,
       title: existingThread?.title || message.slice(0, 50),
       messages: existingThread?.messages || [],
@@ -276,7 +279,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     // 타임아웃 (5분)
     const processTimeout = setTimeout(() => {
-      if (!proc.killed) {
+      if (this.isCurrentRun(threadId, runId, proc) && this.isProcessActive(proc)) {
         console.error(`[claude] Process timeout (5min) for thread ${threadId}`);
         if (process.platform === 'win32') {
           proc.kill();
@@ -315,6 +318,7 @@ export class ClaudeAdapter implements AgentAdapter {
       rl.on('line', (line) => {
         const trimmed = line.trim();
         if (!trimmed) return;
+        if (!this.isCurrentRun(threadId, runId, proc)) return;
 
         let event: ClaudeStreamEvent;
         try {
@@ -504,6 +508,7 @@ export class ClaudeAdapter implements AgentAdapter {
       proc.stderr.on('data', (chunk: Buffer) => {
         const text = chunk.toString().trim();
         if (text) {
+          if (!this.isCurrentRun(threadId, runId, proc)) return;
           console.error('[claude stderr]', text);
           stderrEmitted = true;
           this.emit({
@@ -519,6 +524,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // 프로세스 종료 처리
     proc.on('close', (code) => {
       clearTimeout(processTimeout);
+      if (!this.isCurrentRun(threadId, runId, proc)) return;
       this.streamingBuffers.delete(threadId);
 
       // stderr에서 이미 에러를 전송했으면 close 에러 중복 방지
@@ -558,7 +564,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
       // idle 상태로 전환 (다른 활성 스레드가 없으면)
       const hasActiveThreads = Array.from(this.threads.values()).some(
-        (t) => t.id !== threadId && t.process && !t.process.killed,
+        (t) => t.id !== threadId && this.isProcessActive(t.process),
       );
 
       if (!hasActiveThreads) {
@@ -568,6 +574,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     proc.on('error', (err) => {
       clearTimeout(processTimeout);
+      if (!this.isCurrentRun(threadId, runId, proc)) return;
       this.streamingBuffers.delete(threadId);
       this.emit({
         type: 'error',
@@ -605,6 +612,15 @@ export class ClaudeAdapter implements AgentAdapter {
         console.error('[claude] Event handler error:', err);
       }
     }
+  }
+
+  private isCurrentRun(threadId: string, runId: string, proc: ChildProcess): boolean {
+    const thread = this.threads.get(threadId);
+    return thread?.runId === runId && thread.process === proc;
+  }
+
+  private isProcessActive(proc?: ChildProcess | null): boolean {
+    return !!proc && proc.exitCode === null && proc.signalCode === null && !proc.killed;
   }
 
   private updateStatus(state: AgentStatus['state'], activeThread?: string): void {
