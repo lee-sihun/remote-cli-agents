@@ -437,6 +437,7 @@ export default function App() {
         [key]: value,
       };
       s.setAgentSettings(s.activeAgent, updated);
+      s.setLastUsedAgentSettings(s.activeAgent, updated);
 
       // 서버에 설정 전달
       wsRef.current.send({
