@@ -115,12 +115,23 @@ export class ClaudeAdapter implements AgentAdapter {
     const tid = threadId || randomUUID();
     const existingThread = this.threads.get(tid);
 
+    // 기존 프로세스가 실행 중이면 종료 후 재시작
+    if (existingThread?.process && !existingThread.process.killed) {
+      console.log(`[claude] Killing existing process for thread ${tid} before new message`);
+      if (existingThread.timeout) clearTimeout(existingThread.timeout);
+      if (process.platform === 'win32') {
+        existingThread.process.kill();
+      } else {
+        existingThread.process.kill('SIGTERM');
+      }
+    }
+
     // 기존 스레드 진입 시 in-memory contextUsage 복원
     if (existingThread?.contextUsage) {
       this.status.contextUsage = existingThread.contextUsage;
     }
 
-    if (existingThread && existingThread.sessionId) {
+    if (existingThread?.sessionId) {
       console.log(`[claude] Resuming session ${existingThread.sessionId} for thread ${tid}`);
       this.spawnClaude(tid, message, existingThread.sessionId, existingThread.cwd);
     } else {
@@ -250,6 +261,7 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: existingThread?.createdAt || now,
       updatedAt: now,
       cwd,
+      contextUsage: existingThread?.contextUsage,
     };
 
     // 사용자 메시지 추가 + 저장
@@ -291,7 +303,8 @@ export class ClaudeAdapter implements AgentAdapter {
     // stdout에서 JSON 이벤트 파싱
     let accumulatedText = '';
     let accumulatedReasoning = '';
-    let currentToolCall: ToolCall | null = null;
+    const pendingToolCalls = new Map<string, ToolCall>(); // tool_use_id → ToolCall
+    let lastToolCallId: string | null = null; // 가장 최근 tool_use ID (순차 fallback용)
     let messageCompleted = false;
     const collectedToolCalls: ToolCall[] = []; // 완료된 도구 호출 수집 (디스크 저장용)
     let resultMeta: { model?: string; costUsd?: number; usage?: { inputTokens: number; outputTokens: number } } = {};
@@ -344,18 +357,20 @@ export class ClaudeAdapter implements AgentAdapter {
                     content: block.text,
                   });
                 } else if (block.type === 'tool_use' && block.name) {
-                  currentToolCall = {
+                  const toolCall: ToolCall = {
                     id: block.id || randomUUID(),
                     name: block.name,
                     input: block.input || {},
                     status: 'running',
                   };
-                  if (buf) buf.toolCalls.push(currentToolCall);
+                  pendingToolCalls.set(toolCall.id, toolCall);
+                  lastToolCallId = toolCall.id;
+                  if (buf) buf.toolCalls.push(toolCall);
                   this.emit({
                     type: 'tool_start',
                     threadId,
                     agentType: 'claude',
-                    tool: currentToolCall,
+                    tool: toolCall,
                   });
                 }
               }
@@ -377,22 +392,27 @@ export class ClaudeAdapter implements AgentAdapter {
             if (userMsg?.content) {
               const buf = this.streamingBuffers.get(threadId);
               for (const block of userMsg.content) {
-                if (block.type === 'tool_result' && currentToolCall) {
-                  currentToolCall.output = block.content || '';
-                  currentToolCall.status = block.is_error ? 'failed' : 'completed';
+                if (block.type === 'tool_result') {
+                  // tool_use_id로 매칭, 없으면 마지막 tool_use로 fallback
+                  const matchId = block.tool_use_id || lastToolCallId;
+                  const matched = matchId ? pendingToolCalls.get(matchId) : undefined;
+                  if (!matched) continue;
+
+                  matched.output = block.content || '';
+                  matched.status = block.is_error ? 'failed' : 'completed';
                   // 버퍼 내 도구 상태 업데이트
                   if (buf) {
-                    const idx = buf.toolCalls.findIndex((t) => t.id === currentToolCall!.id);
-                    if (idx >= 0) buf.toolCalls[idx] = { ...currentToolCall };
+                    const idx = buf.toolCalls.findIndex((t) => t.id === matched.id);
+                    if (idx >= 0) buf.toolCalls[idx] = { ...matched };
                   }
-                  collectedToolCalls.push({ ...currentToolCall });
+                  collectedToolCalls.push({ ...matched });
+                  pendingToolCalls.delete(matched.id);
                   this.emit({
                     type: 'tool_complete',
                     threadId,
                     agentType: 'claude',
-                    tool: { ...currentToolCall },
+                    tool: { ...matched },
                   });
-                  currentToolCall = null;
                 }
               }
             }
@@ -438,9 +458,11 @@ export class ClaudeAdapter implements AgentAdapter {
 
             // 최종 메시지 생성
             messageCompleted = true;
-            if (currentToolCall) {
-              collectedToolCalls.push({ ...currentToolCall, status: 'completed' });
+            // 미완료 tool call이 남아있으면 수집
+            for (const [, tc] of pendingToolCalls) {
+              collectedToolCalls.push({ ...tc, status: 'completed' });
             }
+            pendingToolCalls.clear();
             const finalText = accumulatedText || (event.result as string) || '';
             const assistantMessage: AgentMessage = {
               id: randomUUID(),
@@ -510,9 +532,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
       // result 이벤트 없이 종료된 경우 message_complete 보장
       if (!messageCompleted) {
-        if (currentToolCall) {
-          collectedToolCalls.push({ ...currentToolCall, status: 'completed' });
+        for (const [, tc] of pendingToolCalls) {
+          collectedToolCalls.push({ ...tc, status: 'completed' });
         }
+        pendingToolCalls.clear();
         const assistantMessage: AgentMessage = {
           id: randomUUID(),
           role: 'assistant',
