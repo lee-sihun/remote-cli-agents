@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { AgentType, AgentMessage, ThreadSummary } from '@rca/shared';
@@ -81,7 +81,6 @@ export function deleteThread(agentType: AgentType, threadId: string): void {
   const msgFile = join(MESSAGES_DIR, `${threadId}.json`);
   try {
     if (existsSync(msgFile)) {
-      const { unlinkSync } = require('node:fs');
       unlinkSync(msgFile);
     }
   } catch {

@@ -476,8 +476,8 @@ export class CodexAdapter implements AgentAdapter {
     for (const handler of this.eventHandlers) {
       try {
         handler(event);
-      } catch {
-        // 이벤트 핸들러 오류 무시
+      } catch (err) {
+        console.error('[codex] Event handler error:', err);
       }
     }
   }

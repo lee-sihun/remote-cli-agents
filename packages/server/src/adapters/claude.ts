@@ -8,6 +8,7 @@ import type {
   AgentMessage,
   ToolCall,
   ThreadSummary,
+  ContextUsage,
 } from '@rca/shared';
 import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
@@ -47,6 +48,7 @@ interface ThreadInfo {
   updatedAt: number;
   cwd?: string;
   timeout?: ReturnType<typeof setTimeout>;
+  contextUsage?: ContextUsage;
 }
 
 export class ClaudeAdapter implements AgentAdapter {
@@ -79,6 +81,7 @@ export class ClaudeAdapter implements AgentAdapter {
           createdAt: t.createdAt,
           updatedAt: t.updatedAt,
           cwd: t.cwd,
+          contextUsage: t.contextUsage,
         });
       }
     }
@@ -89,7 +92,11 @@ export class ClaudeAdapter implements AgentAdapter {
     for (const [, thread] of this.threads) {
       if (thread.timeout) clearTimeout(thread.timeout);
       if (thread.process && !thread.process.killed) {
-        thread.process.kill('SIGTERM');
+        if (process.platform === 'win32') {
+          thread.process.kill();
+        } else {
+          thread.process.kill('SIGTERM');
+        }
       }
     }
     this.updateStatus('idle');
@@ -108,12 +115,9 @@ export class ClaudeAdapter implements AgentAdapter {
     const tid = threadId || randomUUID();
     const existingThread = this.threads.get(tid);
 
-    // 기존 스레드 진입 시 저장된 contextUsage 복원
-    if (existingThread) {
-      const saved = store.loadThreads('claude').find((t) => t.id === tid);
-      if (saved?.contextUsage) {
-        this.status.contextUsage = saved.contextUsage;
-      }
+    // 기존 스레드 진입 시 in-memory contextUsage 복원
+    if (existingThread?.contextUsage) {
+      this.status.contextUsage = existingThread.contextUsage;
     }
 
     if (existingThread && existingThread.sessionId) {
@@ -127,8 +131,25 @@ export class ClaudeAdapter implements AgentAdapter {
 
   interrupt(threadId: string): void {
     const thread = this.threads.get(threadId);
-    if (thread && thread.process && !thread.process.killed) {
-      thread.process.kill('SIGINT');
+    if (thread?.process && !thread.process.killed) {
+      if (process.platform === 'win32') {
+        thread.process.kill();
+      } else {
+        thread.process.kill('SIGINT');
+      }
+    }
+  }
+
+  approve(threadId: string, _toolCallId: string, approved: boolean): void {
+    const thread = this.threads.get(threadId);
+    if (!thread?.process || thread.process.killed) return;
+
+    // Claude Code stdin으로 승인/거부 응답 전달
+    const response = approved ? 'y\n' : 'n\n';
+    try {
+      thread.process.stdin?.write(response);
+    } catch {
+      console.error(`[claude] Failed to write approval for thread ${threadId}`);
     }
   }
 
@@ -156,6 +177,8 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       cwd: t.cwd,
+      sessionId: t.sessionId,
+      contextUsage: t.contextUsage,
     }));
   }
 
@@ -243,7 +266,11 @@ export class ClaudeAdapter implements AgentAdapter {
     const processTimeout = setTimeout(() => {
       if (!proc.killed) {
         console.error(`[claude] Process timeout (5min) for thread ${threadId}`);
-        proc.kill('SIGTERM');
+        if (process.platform === 'win32') {
+          proc.kill();
+        } else {
+          proc.kill('SIGTERM');
+        }
       }
     }, 5 * 60 * 1000);
 
@@ -387,7 +414,7 @@ export class ClaudeAdapter implements AgentAdapter {
             if (event.cost_usd) resultMeta.costUsd = event.cost_usd;
             if (event.model) resultMeta.model = event.model;
 
-            // 컨텍스트 사용량 계산
+            // 컨텍스트 사용량 계산 (스레드별 저장)
             if (event.usage) {
               const inputTokens = (event.usage.input_tokens || 0)
                 + (event.usage.cache_read_input_tokens || 0)
@@ -401,7 +428,9 @@ export class ClaudeAdapter implements AgentAdapter {
                 : model.includes('haiku') ? 200_000
                 : 200_000;
               const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
-              this.status.contextUsage = { used: totalTokens, total: contextWindow, percentage };
+              const usage: ContextUsage = { used: totalTokens, total: contextWindow, percentage };
+              threadInfo.contextUsage = usage;
+              this.status.contextUsage = usage;
             }
 
             // 스트리밍 버퍼 정리
@@ -447,11 +476,13 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     // stderr 에러 처리 (실시간 출력)
+    let stderrEmitted = false;
     if (proc.stderr) {
       proc.stderr.on('data', (chunk: Buffer) => {
         const text = chunk.toString().trim();
         if (text) {
           console.error('[claude stderr]', text);
+          stderrEmitted = true;
           this.emit({
             type: 'error',
             threadId,
@@ -467,7 +498,8 @@ export class ClaudeAdapter implements AgentAdapter {
       clearTimeout(processTimeout);
       this.streamingBuffers.delete(threadId);
 
-      if (code !== 0 && code !== null) {
+      // stderr에서 이미 에러를 전송했으면 close 에러 중복 방지
+      if (code !== 0 && code !== null && !stderrEmitted) {
         this.emit({
           type: 'error',
           threadId,
@@ -511,6 +543,8 @@ export class ClaudeAdapter implements AgentAdapter {
     });
 
     proc.on('error', (err) => {
+      clearTimeout(processTimeout);
+      this.streamingBuffers.delete(threadId);
       this.emit({
         type: 'error',
         threadId,
@@ -535,7 +569,7 @@ export class ClaudeAdapter implements AgentAdapter {
       updatedAt: thread.updatedAt,
       cwd: thread.cwd,
       sessionId: thread.sessionId,
-      contextUsage: this.status.contextUsage,
+      contextUsage: thread.contextUsage,
     });
   }
 
@@ -543,8 +577,8 @@ export class ClaudeAdapter implements AgentAdapter {
     for (const handler of this.eventHandlers) {
       try {
         handler(event);
-      } catch {
-        // 이벤트 핸들러 오류 무시
+      } catch (err) {
+        console.error('[claude] Event handler error:', err);
       }
     }
   }

@@ -26,6 +26,7 @@ export interface AgentAdapter {
   // 대화
   sendMessage(threadId: string, message: string): void;
   interrupt(threadId: string): void;
+  approve?(threadId: string, toolCallId: string, approved: boolean): void;
 
   // 이벤트
   onEvent(handler: (event: AgentEvent) => void): void;

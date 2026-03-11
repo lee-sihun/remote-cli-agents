@@ -174,9 +174,16 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
     });
 
     ws.on('message', async (data) => {
+      // 메시지 크기 제한 (1MB)
+      const raw = typeof data === 'string' ? data : data.toString();
+      if (raw.length > 1024 * 1024) {
+        sendToClient(ws, { type: 'error', message: 'Message too large' });
+        return;
+      }
+
       let msg: ClientMessage;
       try {
-        msg = JSON.parse(typeof data === 'string' ? data : data.toString());
+        msg = JSON.parse(raw);
       } catch {
         sendToClient(ws, { type: 'error', message: 'Invalid JSON' });
         return;
@@ -402,9 +409,13 @@ async function handleClientMessage(
     }
 
     case 'approve': {
-      // 승인/거부 처리 (에이전트별 구현 필요)
-      // 현재는 로그만 출력
-      console.log(`[server] Approval for ${msg.agentType}/${msg.threadId}: ${msg.approved}`);
+      const adapter = adapters.get(msg.agentType);
+      if (adapter?.approve) {
+        adapter.approve(msg.threadId, msg.toolCallId, msg.approved);
+        console.log(`[server] Approval sent: ${msg.agentType}/${msg.threadId} toolCall=${msg.toolCallId} approved=${msg.approved}`);
+      } else {
+        console.log(`[server] Approve not supported for ${msg.agentType}`);
+      }
       break;
     }
 
