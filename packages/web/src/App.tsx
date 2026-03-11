@@ -271,29 +271,44 @@ export default function App() {
   const currentAgentSettings = store.activeAgent
     ? store.agentSettings.get(store.activeAgent) || {}
     : {};
+  const currentLastUsedSettings = store.activeAgent
+    ? store.lastUsedAgentSettings.get(store.activeAgent)
+    : undefined;
+  const settingsSourceRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!store.activeAgent) return;
+    if (!store.activeAgent) {
+      settingsSourceRef.current = null;
+      return;
+    }
 
     const options = AGENT_OPTIONS[store.activeAgent] || [];
     const fallbackSettings = mergeAgentSettings(
       options,
-      store.lastUsedAgentSettings.get(store.activeAgent),
+      currentLastUsedSettings,
     );
     const desiredSettings = store.activeThread && activeThreadSummary?.config
       ? mergeAgentSettings(options, activeThreadSummary.config)
       : fallbackSettings;
+    const sourceKey = JSON.stringify({
+      agent: store.activeAgent,
+      threadId: store.activeThread || '__new__',
+      settings: desiredSettings,
+    });
 
-    if (!sameSettings(currentAgentSettings, desiredSettings)) {
-      store.setAgentSettings(store.activeAgent, desiredSettings);
+    if (settingsSourceRef.current === sourceKey) {
+      return;
+    }
+    settingsSourceRef.current = sourceKey;
+
+    if (!sameSettings(storeRef.current.agentSettings.get(store.activeAgent) || {}, desiredSettings)) {
+      storeRef.current.setAgentSettings(store.activeAgent, desiredSettings);
     }
   }, [
     activeThreadSummary?.config,
-    currentAgentSettings,
-    store,
     store.activeAgent,
     store.activeThread,
-    store.lastUsedAgentSettings,
+    currentLastUsedSettings,
   ]);
 
   // Handlers (ref 패턴: 의존성 없이 안정적인 참조)
