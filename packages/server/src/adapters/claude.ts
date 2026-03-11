@@ -448,10 +448,11 @@ export class ClaudeAdapter implements AgentAdapter {
               const totalTokens = inputTokens + outputTokens;
               resultMeta.usage = { inputTokens, outputTokens };
 
-              const model = this.status.model || this.config?.model || 'default';
-              const contextWindow = model.includes('1m') ? 1_000_000
-                : model.includes('haiku') ? 200_000
-                : 200_000;
+              const contextWindow = this.estimateContextWindow([
+                this.config?.model,
+                event.model,
+                this.status.model,
+              ]);
               const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
               const usage: ContextUsage = { used: totalTokens, total: contextWindow, percentage };
               threadInfo.contextUsage = usage;
@@ -621,6 +622,18 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private isProcessActive(proc?: ChildProcess | null): boolean {
     return !!proc && proc.exitCode === null && proc.signalCode === null && !proc.killed;
+  }
+
+  private estimateContextWindow(modelHints: Array<string | undefined>): number {
+    const normalized = modelHints
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.toLowerCase());
+
+    if (normalized.some((value) => value.includes('1m'))) {
+      return 1_000_000;
+    }
+
+    return 200_000;
   }
 
   private updateStatus(state: AgentStatus['state'], activeThread?: string): void {
