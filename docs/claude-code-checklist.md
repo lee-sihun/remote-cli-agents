@@ -25,7 +25,7 @@
 ### 1-3. 동시 실행
 - [x] 같은 threadId로 `sendMessage` 연속 호출 시 이전 프로세스 kill → 새 프로세스 spawn 정상 동작
 - [x] kill 후 `close` 이벤트의 `messageCompleted` 체크가 새 프로세스와 충돌하지 않는지
-- [ ] 다른 threadId로 동시 실행 시 `status.activeThread`가 마지막 스레드만 추적 (의도된 동작인지)
+- [x] 다른 threadId 동시 실행 시 `status.activeThread`가 최신 활성 스레드를 가리키고, 종료 시 남은 활성 스레드로 전환되는지
 
 ---
 
@@ -35,7 +35,7 @@
 - [x] `assistant` 이벤트: `message.content` 배열에서 text, thinking, tool_use 추출 정확성
 - [x] `user` 이벤트: `tool_result` 매칭이 `tool_use_id` 기반으로 정확한지
 - [x] `result` 이벤트: `session_id`, `model`, `cost_usd`, `usage` 추출 정확성
-- [ ] 미처리 이벤트 타입: `system`은 처리 추가. `rate_limit_event`는 실환경 확인됐고 현재는 명시적으로 무시
+- [x] 미처리 이벤트 타입: `system`은 처리 추가. `rate_limit_event`는 실환경 확인됐고 현재는 명시적으로 무시
 - [x] Claude Code가 `--output-format stream-json`에서 실제로 어떤 이벤트를 보내는지 CLI 직접 검증
 
 ### 2-2. 텍스트 델타 vs 전체 텍스트
@@ -45,10 +45,10 @@
 
 ### 2-3. tool_use / tool_result 흐름
 - [ ] `tool_use` → `tool_result` 순서가 항상 보장되는지
-- [ ] `tool_result.tool_use_id`가 항상 존재하는지 (fallback으로 `lastToolCallId` 사용 중)
+- [x] `tool_result.tool_use_id`가 항상 존재하는지 (fallback으로 `lastToolCallId` 사용 중)
 - [ ] 다중 tool_use가 한 `assistant` 이벤트에 올 수 있는지
 - [ ] `tool_result` 없이 다음 `assistant`가 오는 경우 (도구 실행 실패 시)
-- [ ] `pendingToolCalls` Map에 남은 채 result 이벤트가 오면 status가 'completed'로 처리되는지
+- [x] `pendingToolCalls` Map에 남은 채 result 이벤트가 오면 status가 'completed'로 처리되는지
 
 ---
 
@@ -100,7 +100,7 @@
 
 ### 5-3. 이벤트 핸들러
 - [x] `emit()` 내부 catch에서 `console.error` 로깅 확인
-- [ ] WebSocket 전송 실패가 에이전트 동작에 영향 주지 않는지
+- [x] WebSocket 전송 실패가 에이전트 동작에 영향 주지 않는지
 
 ---
 
@@ -108,17 +108,17 @@
 
 ### 6-1. 스레드 목록 복원
 - [x] 서버 시작 시 `store.loadThreads('claude')` → `threads` Map 복원
-- [ ] 클라이언트 연결 시 `list_threads` → `getThreads()` 반환값에 모든 스레드 포함
+- [x] 클라이언트 연결 시 `list_threads` → `getThreads()` 반환값에 모든 스레드 포함
 - [ ] 클라이언트 새로고침 시 localStorage `activeAgent`/`activeThread` → `get_thread_state` 흐름
 
 ### 6-2. 스트리밍 상태 동기화
 - [x] `streamingBuffers`에 현재 진행 중인 content + toolCalls 정확히 추적
-- [ ] `get_thread_state` 응답에 streaming 상태가 포함되는지
+- [x] `get_thread_state` 응답에 streaming 상태가 포함되는지
 - [ ] 스레드 전환 시 이전 스레드의 스트리밍 이벤트가 계속 브로드캐스트되는데 클라이언트에서 올바른 스레드에 매핑하는지
 
 ### 6-3. 상태 전환
-- [ ] `running` → `idle` 전환: `hasActiveThreads` 체크 로직
-- [ ] 여러 스레드 동시 실행 시 `status.activeThread`가 단일 값만 추적 (다른 스레드는 running 표시 안 됨)
+- [x] `running` → `idle` 전환: `hasActiveThreads` 체크 로직
+- [x] 여러 스레드 동시 실행 시 `status.activeThread`가 단일 값만 추적하되, 종료 시 남은 활성 스레드로 재정렬
 - [ ] 클라이언트의 `isRunning` 체크: `agentStatus.activeThread === store.activeThread`
 
 ---
@@ -126,10 +126,11 @@
 ## 7. 설정 관리
 
 ### 7-1. 모델 설정
-- [ ] `--model` 플래그에 전달되는 모델명이 Claude Code가 인식하는 형식인지
-- [ ] `sonnet`, `opus`, `haiku` → Claude Code의 실제 모델명 매핑
-- [ ] `sonnet[1m]`, `opusplan` 같은 커스텀 값이 CLI에서 동작하는지
-  - 실환경 메모: `sonnet[1m]`은 CLI에서 모델 문자열로 수용되지만 현재 계정에서는 rate limit으로 완료 검증 실패
+- [x] `--model` 플래그에 전달되는 모델명이 Claude Code가 인식하는 형식인지
+- [x] `sonnet`, `opus`, `haiku` → Claude Code의 실제 모델명 매핑
+- [x] `sonnet[1m]`, `opusplan` 같은 커스텀 값이 CLI에서 동작하는지
+  - 실환경 메모: `sonnet[1m]`은 `claude-sonnet-4-6[1m]`으로 init 이벤트에 반영되지만 현재 계정에서는 rate limit 응답 가능
+  - 실환경 메모: `opusplan`은 현재 CLI에서 `claude-sonnet-4-6`으로 init 이벤트가 보고됨
 
 ### 7-2. 권한 모드
 - [x] `--dangerously-skip-permissions` (bypassPermissions) 동작 확인
@@ -146,8 +147,8 @@
 ## 8. 데이터 영속성
 
 ### 8-1. 디스크 저장
-- [ ] `store.saveThread` 호출 시점: spawnClaude 시작, result 이벤트, close 이벤트
-- [ ] `store.appendMessage` 호출 시점: 사용자 메시지, 어시스턴트 메시지 (result/close)
+- [x] `store.saveThread` 호출 시점: spawnClaude 시작, result 이벤트, close 이벤트
+- [x] `store.appendMessage` 호출 시점: 사용자 메시지, 어시스턴트 메시지 (result/close)
 - [ ] 동기 I/O (`writeFileSync`) 사용 시 이벤트 루프 블로킹 영향
 - [x] `MAX_MESSAGES_PER_THREAD = 200` 제한 적용
 
@@ -171,14 +172,14 @@
 - [ ] 서버에서 `message_complete` 없이 연결 끊김 시 UI 상태
 
 ### 9-3. 새 대화 생성
-- [ ] `handleSendMessage`에서 `threadId` 생성 (클라이언트) vs `server.ts`의 `randomUUID()` (서버) 중복 확인
-- [ ] `threadId` 형식: 클라이언트 `Date.now()-random` vs 서버 UUID → 불일치 문제 없는지
+- [x] `handleSendMessage`에서 `threadId` 생성 (클라이언트) vs `server.ts`의 `randomUUID()` (서버) 중복 확인
+- [x] `threadId` 형식: 클라이언트 `Date.now()-random` vs 서버 UUID → 불일치 문제 없는지
 
 ---
 
 ## 10. 보안/안정성
 
-- [ ] `CLAUDECODE` 환경변수 삭제 (중첩 실행 방지) 동작 확인
+- [x] `CLAUDECODE` 환경변수 삭제 (중첩 실행 방지) 동작 확인
 - [ ] `shell: true` (Windows)에서 명령어 인젝션 가능성 (프롬프트가 stdin으로 전달되므로 낮음)
 - [x] WebSocket 메시지 크기 제한 (1MB) 적용 확인
 - [ ] 토큰/인증 검증이 WebSocket 업그레이드 시 올바르게 동작하는지
