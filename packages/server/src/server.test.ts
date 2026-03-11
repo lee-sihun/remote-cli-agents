@@ -12,6 +12,7 @@ import { handleClientMessage, parseClientMessagePayload, sendToClient } from './
 
 interface FakeAdapter {
   approve?: (threadId: string, toolCallId: string, approved: boolean) => void;
+  deleteThread?: (threadId: string) => void | Promise<void>;
   getStatus: () => AgentStatus;
   getStreamingState?: (threadId: string) => { content: string; toolCalls: [] } | null;
   getThreads: () => Promise<ThreadSummary[]>;
@@ -19,6 +20,7 @@ interface FakeAdapter {
   isAvailable: () => Promise<boolean>;
   name: string;
   onEvent: (handler: (event: AgentEvent) => void) => void;
+  renameThread?: (threadId: string, title: string) => void | Promise<void>;
   readonly type: AgentType;
   sendMessage: (threadId: string, message: string, config?: AgentConfig) => void;
   start: (config: AgentConfig) => Promise<void>;
@@ -136,6 +138,62 @@ describe('server helpers', () => {
       type: 'threads_list',
       agentType: 'claude',
       threads: await adapter.getThreads(),
+    }));
+  });
+
+  it('renames a thread and returns the refreshed list', async () => {
+    const ws = createFakeWebSocket();
+    const renameThread = vi.fn();
+    const threads: ThreadSummary[] = [{
+      id: 'thread-1',
+      agentType: 'claude',
+      title: 'Renamed',
+      messageCount: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    }];
+    const adapter = createFakeAdapter({
+      renameThread,
+      getThreads: async () => threads,
+    });
+    const adapters = new Map<AgentType, FakeAdapter>([['claude', adapter]]);
+
+    await handleClientMessage(
+      ws as unknown as WebSocket,
+      { type: 'rename_thread', agentType: 'claude', threadId: 'thread-1', title: 'Renamed' },
+      adapters as never,
+      'C:/workspace',
+    );
+
+    expect(renameThread).toHaveBeenCalledWith('thread-1', 'Renamed');
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'threads_list',
+      agentType: 'claude',
+      threads,
+    }));
+  });
+
+  it('deletes a thread and returns the refreshed list', async () => {
+    const ws = createFakeWebSocket();
+    const deleteThread = vi.fn();
+    const adapter = createFakeAdapter({
+      deleteThread,
+      getThreads: async () => [],
+    });
+    const adapters = new Map<AgentType, FakeAdapter>([['claude', adapter]]);
+
+    await handleClientMessage(
+      ws as unknown as WebSocket,
+      { type: 'delete_thread', agentType: 'claude', threadId: 'thread-1' },
+      adapters as never,
+      'C:/workspace',
+    );
+
+    expect(deleteThread).toHaveBeenCalledWith('thread-1');
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'threads_list',
+      agentType: 'claude',
+      threads: [],
     }));
   });
 

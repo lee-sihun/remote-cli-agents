@@ -49,6 +49,8 @@ interface AgentState {
   setActiveThread: (threadId: string | null) => void;
   setAgentSettings: (agent: AgentType, settings: Record<string, string>) => void;
   setLastUsedAgentSettings: (agent: AgentType, settings: Record<string, string>) => void;
+  renameThread: (agentType: AgentType, threadId: string, title: string) => void;
+  deleteThread: (agentType: AgentType, threadId: string) => void;
   upsertThreadFromUserMessage: (
     agentType: AgentType,
     threadId: string,
@@ -137,6 +139,64 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     map.set(agent, settings);
     saveAgentSettings('rca_last_used_agent_settings', map);
     set({ lastUsedAgentSettings: map });
+  },
+
+  renameThread: (agentType, threadId, title) => {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const threads = new Map(get().threads);
+    const agentThreads = [...(threads.get(agentType) || [])];
+    const threadIndex = agentThreads.findIndex((thread) => thread.id === threadId);
+    if (threadIndex < 0) {
+      return;
+    }
+
+    agentThreads[threadIndex] = {
+      ...agentThreads[threadIndex],
+      title: trimmed,
+    };
+    threads.set(agentType, agentThreads);
+    set({ threads });
+  },
+
+  deleteThread: (agentType, threadId) => {
+    const state = get();
+    const threads = new Map(state.threads);
+    threads.set(
+      agentType,
+      (threads.get(agentType) || []).filter((thread) => thread.id !== threadId),
+    );
+
+    const messages = new Map(state.messages);
+    messages.delete(threadId);
+
+    const streamingContent = new Map(state.streamingContent);
+    streamingContent.delete(threadId);
+
+    const activeToolCalls = new Map(state.activeToolCalls);
+    activeToolCalls.delete(threadId);
+
+    const pendingApprovals = state.pendingApprovals.filter(
+      (approval) => approval.threadId !== threadId,
+    );
+
+    const updates: Partial<AgentState> = {
+      threads,
+      messages,
+      streamingContent,
+      activeToolCalls,
+      pendingApprovals,
+    };
+
+    if (state.activeThread === threadId) {
+      saveTo('rca_active_thread', null);
+      updates.activeThread = null;
+    }
+
+    set(updates);
   },
 
   upsertThreadFromUserMessage: (agentType, threadId, content, config) => {

@@ -64,6 +64,29 @@ export function saveThread(agentType: AgentType, thread: ThreadSummary): void {
   writeFileSync(THREADS_FILE, JSON.stringify(obj, null, 2), 'utf-8');
 }
 
+export function renameThread(agentType: AgentType, threadId: string, title: string): boolean {
+  ensureDirs();
+  const all = loadAllThreads();
+  const threads = all.get(agentType) || [];
+  const idx = threads.findIndex((t) => t.id === threadId);
+  if (idx < 0) {
+    return false;
+  }
+
+  threads[idx] = {
+    ...threads[idx],
+    title,
+  };
+  all.set(agentType, threads);
+
+  const obj: StoredThreads = {};
+  for (const [key, val] of all) {
+    obj[key] = val;
+  }
+  writeFileSync(THREADS_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+  return true;
+}
+
 export function deleteThread(agentType: AgentType, threadId: string): void {
   ensureDirs();
   const all = loadAllThreads();

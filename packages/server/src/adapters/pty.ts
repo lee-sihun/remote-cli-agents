@@ -146,6 +146,33 @@ export class PtyAdapter implements AgentAdapter {
     }));
   }
 
+  renameThread(threadId: string, title: string): void {
+    const session = this.sessions.get(threadId);
+    if (!session) {
+      return;
+    }
+
+    session.title = title;
+  }
+
+  deleteThread(threadId: string): void {
+    const session = this.sessions.get(threadId);
+    if (!session) {
+      return;
+    }
+
+    try {
+      session.pty.kill();
+    } catch {
+      // ignore
+    }
+    this.sessions.delete(threadId);
+
+    if (this.status.activeThread === threadId) {
+      this.updateStatus(this.sessions.size > 0 ? 'running' : 'idle');
+    }
+  }
+
   // PTY 리사이즈
   resize(threadId: string, cols: number, rows: number): void {
     const session = this.sessions.get(threadId);

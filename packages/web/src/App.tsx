@@ -391,6 +391,35 @@ export default function App() {
     [],
   );
 
+  const handleRenameThread = useCallback(
+    (agentType: AgentType, threadId: string, title: string) => {
+      const s = storeRef.current;
+      const trimmed = title.trim();
+      if (!trimmed) return;
+
+      s.renameThread(agentType, threadId, trimmed);
+      wsRef.current.send({
+        type: 'rename_thread',
+        agentType,
+        threadId,
+        title: trimmed,
+      });
+    },
+    [],
+  );
+
+  const handleDeleteThread = useCallback(
+    (agentType: AgentType, threadId: string) => {
+      storeRef.current.deleteThread(agentType, threadId);
+      wsRef.current.send({
+        type: 'delete_thread',
+        agentType,
+        threadId,
+      });
+    },
+    [],
+  );
+
   const handleNewChat = useCallback(() => {
     storeRef.current.setActiveThread(null);
     setSidebarOpen(false);
@@ -503,7 +532,14 @@ export default function App() {
             threads={store.threads}
             activeAgent={store.activeAgent}
             activeThread={store.activeThread}
+            runningThreadIds={new Set(
+              Array.from(store.agentStatuses.values())
+                .filter((status) => status.activeThread && (status.state === 'running' || status.state === 'waiting_approval'))
+                .map((status) => status.activeThread as string),
+            )}
             onSelectThread={handleSelectThread}
+            onRenameThread={handleRenameThread}
+            onDeleteThread={handleDeleteThread}
             onNewChat={handleNewChat}
           />
         </div>

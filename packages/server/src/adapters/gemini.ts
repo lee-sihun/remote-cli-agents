@@ -131,6 +131,33 @@ export class GeminiAdapter implements AgentAdapter {
     }));
   }
 
+  renameThread(threadId: string, title: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      return;
+    }
+
+    thread.title = title;
+  }
+
+  deleteThread(threadId: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      return;
+    }
+
+    try {
+      thread.pty.kill();
+    } catch {
+      // ignore
+    }
+    this.threads.delete(threadId);
+
+    if (this.status.activeThread === threadId) {
+      this.updateStatus(this.threads.size > 0 ? 'running' : 'idle');
+    }
+  }
+
   // PTY 리사이즈
   resize(threadId: string, cols: number, rows: number): void {
     const thread = this.threads.get(threadId);

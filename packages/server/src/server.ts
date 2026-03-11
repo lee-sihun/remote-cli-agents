@@ -71,13 +71,15 @@ const __dirname = typeof import.meta.url !== 'undefined'
 
 export async function createBridgeServer(config: ServerConfig): Promise<ServerInstance> {
   const { port, cwd, enableRelay } = config;
+  const permissionApiToken = randomUUID();
+  const permissionBridgeScriptPath = join(__dirname, '..', 'bin', 'claude-permission-bridge.mjs');
 
   // 에이전트 어댑터 초기화
   const adapters = new Map<AgentType, AgentAdapter>();
   const connectedClients = new Set<WebSocket>();
 
   // 에이전트 감지 및 초기화
-  await initializeAdapters(adapters, cwd);
+  await initializeAdapters(adapters, cwd, port, permissionApiToken, permissionBridgeScriptPath);
 
   // 에이전트 이벤트 → 클라이언트 브로드캐스트
   for (const [, adapter] of adapters) {
@@ -119,6 +121,59 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
     if (url === '/api/relay-stats' && enableRelay) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getRelayStats()));
+      return;
+    }
+
+    if (url === '/api/internal/claude/permission-request' && req.method === 'POST') {
+      if (req.headers['x-rca-internal-token'] !== permissionApiToken) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const claudeAdapter = adapters.get('claude');
+      if (!(claudeAdapter instanceof ClaudeAdapter)) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          behavior: 'deny',
+          message: 'Claude adapter is not available.',
+        }));
+        return;
+      }
+
+      try {
+        const body = await readJsonBody(req) as {
+          input?: Record<string, unknown>;
+          threadId?: string;
+          toolName?: string;
+          toolUseId?: string;
+        };
+
+        if (!body.threadId || !body.toolName || !body.toolUseId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            behavior: 'deny',
+            message: 'Missing threadId, toolName, or toolUseId.',
+          }));
+          return;
+        }
+
+        const decision = await claudeAdapter.requestPermission(
+          body.threadId,
+          body.toolName,
+          body.input || {},
+          body.toolUseId,
+        );
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(decision));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          behavior: 'deny',
+          message: err instanceof Error ? err.message : 'Failed to process permission request.',
+        }));
+      }
       return;
     }
 
@@ -268,13 +323,31 @@ function normalizeRawMessage(data: RawData): string {
   return Buffer.from(data).toString();
 }
 
+async function readJsonBody(req: import('node:http').IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  const raw = Buffer.concat(chunks).toString('utf-8');
+  return raw ? JSON.parse(raw) : {};
+}
+
 // 어댑터 초기화 및 설치된 에이전트 감지
 async function initializeAdapters(
   adapters: Map<AgentType, AgentAdapter>,
   cwd: string,
+  port: number,
+  permissionApiToken: string,
+  permissionBridgeScriptPath: string,
 ): Promise<void> {
   const candidates: AgentAdapter[] = [
-    new ClaudeAdapter(),
+    new ClaudeAdapter({
+      permissionApiBaseUrl: `http://127.0.0.1:${port}`,
+      permissionApiToken,
+      permissionBridgeScriptPath,
+    }),
     new CodexAdapter(),
     new GeminiAdapter(),
     new PtyAdapter(),
@@ -374,6 +447,58 @@ export async function handleClientMessage(
         return;
       }
 
+      const threads = await adapter.getThreads();
+      sendToClient(ws, {
+        type: 'threads_list',
+        agentType: msg.agentType,
+        threads,
+      });
+      break;
+    }
+
+    case 'rename_thread': {
+      const adapter = adapters.get(msg.agentType);
+      if (!adapter) {
+        sendToClient(ws, {
+          type: 'error',
+          message: `Agent not available: ${msg.agentType}`,
+          code: 'AGENT_NOT_FOUND',
+        });
+        return;
+      }
+
+      const title = msg.title.trim();
+      if (!title) {
+        sendToClient(ws, {
+          type: 'error',
+          message: 'Thread title cannot be empty',
+          code: 'INVALID_THREAD_TITLE',
+        });
+        return;
+      }
+
+      await adapter.renameThread?.(msg.threadId, title);
+      const threads = await adapter.getThreads();
+      sendToClient(ws, {
+        type: 'threads_list',
+        agentType: msg.agentType,
+        threads,
+      });
+      break;
+    }
+
+    case 'delete_thread': {
+      const adapter = adapters.get(msg.agentType);
+      if (!adapter) {
+        sendToClient(ws, {
+          type: 'error',
+          message: `Agent not available: ${msg.agentType}`,
+          code: 'AGENT_NOT_FOUND',
+        });
+        return;
+      }
+
+      await adapter.deleteThread?.(msg.threadId);
       const threads = await adapter.getThreads();
       sendToClient(ws, {
         type: 'threads_list',

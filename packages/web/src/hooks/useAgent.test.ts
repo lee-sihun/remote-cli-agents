@@ -132,6 +132,70 @@ describe('useAgentStore', () => {
     });
   });
 
+  it('renames an existing thread in place', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      threads: new Map([[
+        'claude',
+        [{
+          id: 'thread-1',
+          agentType: 'claude',
+          title: 'Old title',
+          messageCount: 1,
+          createdAt: 1,
+          updatedAt: 2,
+        }],
+      ]]),
+    });
+
+    useAgentStore.getState().renameThread('claude', 'thread-1', 'Renamed title');
+
+    expect(useAgentStore.getState().threads.get('claude')?.[0]?.title).toBe('Renamed title');
+  });
+
+  it('deletes thread state and clears active thread when removing the selected session', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      activeThread: 'thread-1',
+      threads: new Map([[
+        'claude',
+        [{
+          id: 'thread-1',
+          agentType: 'claude',
+          title: 'Delete me',
+          messageCount: 1,
+          createdAt: 1,
+          updatedAt: 2,
+        }],
+      ]]),
+      messages: new Map([['thread-1', [{
+        id: 'message-1',
+        role: 'assistant',
+        content: 'hello',
+        timestamp: 1,
+      }]]]),
+      streamingContent: new Map([['thread-1', 'partial']]),
+      activeToolCalls: new Map([['thread-1', [baseToolCall]]]),
+      pendingApprovals: [{
+        ...baseToolCall,
+        status: 'requires_approval',
+        threadId: 'thread-1',
+        agentType: 'claude',
+      }],
+    });
+
+    useAgentStore.getState().deleteThread('claude', 'thread-1');
+
+    expect(useAgentStore.getState().activeThread).toBeNull();
+    expect(useAgentStore.getState().threads.get('claude')).toEqual([]);
+    expect(useAgentStore.getState().messages.has('thread-1')).toBe(false);
+    expect(useAgentStore.getState().streamingContent.has('thread-1')).toBe(false);
+    expect(useAgentStore.getState().activeToolCalls.has('thread-1')).toBe(false);
+    expect(useAgentStore.getState().pendingApprovals).toEqual([]);
+  });
+
   it('deduplicates tool calls and upserts completed assistant messages', async () => {
     const { useAgentStore } = await import('./useAgent.ts');
 

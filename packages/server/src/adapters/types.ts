@@ -34,6 +34,8 @@ export interface AgentAdapter {
   // 상태
   getStatus(): AgentStatus;
   getThreads(): Promise<ThreadSummary[]>;
+  renameThread?(threadId: string, title: string): Promise<void> | void;
+  deleteThread?(threadId: string): Promise<void> | void;
 
   // 스트리밍 상태 조회 (재연결 동기화용)
   getStreamingState?(threadId: string): ThreadStreamingState | null;

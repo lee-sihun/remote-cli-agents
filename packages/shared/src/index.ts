@@ -68,10 +68,10 @@ export const CLAUDE_OPTIONS: AgentOptionDef[] = [
     label: 'Mode',
     type: 'select',
     options: [
-      { value: 'default', label: 'Default' },
+      { value: 'default', label: 'Standard' },
       { value: 'acceptEdits', label: 'Auto Edit' },
       { value: 'plan', label: 'Plan' },
-      { value: 'dontAsk', label: "Don't Ask" },
+      { value: 'dontAsk', label: 'No Prompt' },
       { value: 'bypassPermissions', label: 'Bypass' },
     ],
     defaultValue: 'default',
@@ -198,6 +198,8 @@ export type ClientMessage =
   | { type: 'interrupt'; agentType: AgentType; threadId: string }
   | { type: 'approve'; agentType: AgentType; threadId: string; toolCallId: string; approved: boolean }
   | { type: 'list_threads'; agentType: AgentType }
+  | { type: 'rename_thread'; agentType: AgentType; threadId: string; title: string }
+  | { type: 'delete_thread'; agentType: AgentType; threadId: string }
   | { type: 'get_thread_messages'; agentType: AgentType; threadId: string }
   | { type: 'get_thread_state'; agentType: AgentType; threadId: string }
   | { type: 'list_agents' }

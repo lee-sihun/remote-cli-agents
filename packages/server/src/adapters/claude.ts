@@ -1,6 +1,9 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { tmpdir } from 'node:os';
 import type {
   AgentConfig,
   AgentEvent,
@@ -56,7 +59,31 @@ interface ThreadInfo {
   timeout?: ReturnType<typeof setTimeout>;
   contextUsage?: ContextUsage;
   config?: AgentConfig;
+  permissionBridgeConfigPath?: string;
 }
+
+interface ClaudeAdapterOptions {
+  permissionApiBaseUrl?: string;
+  permissionApiToken?: string;
+  permissionBridgeScriptPath?: string;
+}
+
+interface PendingApproval {
+  resolve: (decision: PermissionDecision) => void;
+  reject: (reason?: string) => void;
+  threadId: string;
+  tool: ToolCall;
+}
+
+interface PermissionDecision {
+  behavior: 'allow' | 'deny';
+  message?: string;
+  toolUseID?: string;
+  updatedInput?: Record<string, unknown>;
+  updatedPermissions?: unknown[];
+}
+
+const CLAUDE_PERMISSION_PROMPT_TOOL = 'mcp__rca-permission__rca_approve_permission';
 
 export class ClaudeAdapter implements AgentAdapter {
   readonly name = 'Claude Code';
@@ -65,12 +92,18 @@ export class ClaudeAdapter implements AgentAdapter {
   private threads = new Map<string, ThreadInfo>();
   private eventHandlers: AgentEventHandler[] = [];
   private config: AgentConfig | null = null;
+  private readonly options: ClaudeAdapterOptions;
   private status: AgentStatus = {
     agent: 'claude',
     state: 'idle',
   };
   // per-thread 스트리밍 버퍼 (재연결 동기화용)
   private streamingBuffers = new Map<string, { content: string; toolCalls: ToolCall[] }>();
+  private pendingApprovals = new Map<string, PendingApproval>();
+
+  constructor(options: ClaudeAdapterOptions = {}) {
+    this.options = options;
+  }
 
   async start(config: AgentConfig): Promise<void> {
     this.config = config;
@@ -100,6 +133,8 @@ export class ClaudeAdapter implements AgentAdapter {
     // 활성 프로세스만 종료 (스레드 데이터는 유지)
     for (const [, thread] of this.threads) {
       if (thread.timeout) clearTimeout(thread.timeout);
+      this.rejectPendingApprovalsForThread(thread.id, 'Claude session stopped before the permission request was answered.');
+      this.cleanupPermissionBridgeConfig(thread);
       if (this.isProcessActive(thread.process)) {
         terminateChildProcess(thread.process);
       }
@@ -124,6 +159,8 @@ export class ClaudeAdapter implements AgentAdapter {
     if (existingThread && this.isProcessActive(existingThread.process)) {
       console.log(`[claude] Killing existing process for thread ${tid} before new message`);
       if (existingThread.timeout) clearTimeout(existingThread.timeout);
+      this.rejectPendingApprovalsForThread(tid, 'Claude session restarted before the permission request was answered.');
+      this.cleanupPermissionBridgeConfig(existingThread);
       terminateChildProcess(existingThread.process);
     }
 
@@ -154,14 +191,83 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   approve(threadId: string, _toolCallId: string, approved: boolean): void {
+    const pending = this.pendingApprovals.get(_toolCallId);
+    if (!pending || pending.threadId !== threadId) return;
+
+    this.pendingApprovals.delete(_toolCallId);
+    pending.resolve(
+      approved
+        ? {
+          behavior: 'allow',
+          toolUseID: _toolCallId,
+        }
+        : {
+          behavior: 'deny',
+          message: 'User rejected the permission request.',
+          toolUseID: _toolCallId,
+        },
+    );
+
     const thread = this.threads.get(threadId);
-    if (!thread || !this.isProcessActive(thread.process)) return;
-    void approved;
+    if (thread && this.isProcessActive(thread.process)) {
+      this.updateStatus('running', threadId, thread);
+    } else {
+      this.updateStatus('idle');
+    }
+  }
+
+  requestPermission(
+    threadId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    toolUseId: string,
+  ): Promise<PermissionDecision> {
+    const thread = this.threads.get(threadId);
+    if (!thread || !this.isProcessActive(thread.process)) {
+      return Promise.resolve({
+        behavior: 'deny',
+        message: 'Claude session is not running.',
+        toolUseID: toolUseId,
+      });
+    }
+
+    const existing = this.pendingApprovals.get(toolUseId);
+    if (existing) {
+      return Promise.resolve({
+        behavior: 'deny',
+        message: 'A permission request with the same tool_use_id is already pending.',
+        toolUseID: toolUseId,
+      });
+    }
+
+    const tool: ToolCall = {
+      id: toolUseId,
+      name: toolName,
+      input,
+      status: 'requires_approval',
+    };
+
+    this.updateStatus('waiting_approval', threadId, thread);
     this.emit({
-      type: 'error',
+      type: 'approval_required',
       threadId,
       agentType: 'claude',
-      error: 'Claude Code -p 모드는 RCA 런타임 승인 응답을 지원하지 않습니다. permissionMode를 acceptEdits, plan, dontAsk, bypassPermissions 중 하나로 사용하세요.',
+      tool,
+    });
+
+    return new Promise<PermissionDecision>((resolve) => {
+      this.pendingApprovals.set(toolUseId, {
+        threadId,
+        tool,
+        resolve,
+        reject: (reason) => {
+          resolve({
+            behavior: 'deny',
+            message: reason || 'Permission request was cancelled.',
+            toolUseID: toolUseId,
+          });
+        },
+      });
     });
   }
 
@@ -196,6 +302,46 @@ export class ClaudeAdapter implements AgentAdapter {
     }));
   }
 
+  renameThread(threadId: string, title: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      return;
+    }
+
+    thread.title = title;
+    this.saveThreadMeta(thread);
+  }
+
+  deleteThread(threadId: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      store.deleteThread('claude', threadId);
+      return;
+    }
+
+    if (thread.timeout) {
+      clearTimeout(thread.timeout);
+    }
+    this.rejectPendingApprovalsForThread(threadId, 'Claude session was deleted.');
+    this.cleanupPermissionBridgeConfig(thread);
+    if (this.isProcessActive(thread.process)) {
+      terminateChildProcess(thread.process);
+    }
+
+    this.streamingBuffers.delete(threadId);
+    this.threads.delete(threadId);
+    store.deleteThread('claude', threadId);
+
+    if (this.status.activeThread === threadId) {
+      const nextActiveThread = Array.from(this.threads.values()).find((candidate) => this.isProcessActive(candidate.process));
+      if (nextActiveThread) {
+        this.updateStatus('running', nextActiveThread.id, nextActiveThread);
+      } else {
+        this.updateStatus('idle');
+      }
+    }
+  }
+
   // Claude 프로세스 생성
   private spawnClaude(
     threadId: string,
@@ -208,6 +354,7 @@ export class ClaudeAdapter implements AgentAdapter {
       '--output-format', 'stream-json',
       '--verbose',
     ];
+    let permissionBridgeConfigPath: string | undefined;
 
     // 모델 설정 (default는 Claude Code 자체 기본값 사용)
     if (runConfig.model && runConfig.model !== 'default') {
@@ -229,6 +376,18 @@ export class ClaudeAdapter implements AgentAdapter {
       args.push('--dangerously-skip-permissions');
     } else if (perm && perm !== 'default') {
       args.push('--permission-mode', perm);
+    }
+
+    if (perm !== 'bypassPermissions') {
+      permissionBridgeConfigPath = this.createPermissionBridgeConfig(threadId);
+      if (permissionBridgeConfigPath) {
+        args.push(
+          '--mcp-config',
+          permissionBridgeConfigPath,
+          '--permission-prompt-tool',
+          CLAUDE_PERMISSION_PROMPT_TOOL,
+        );
+      }
     }
 
     // -p 플래그를 마지막에 추가 (프롬프트는 stdin으로 전달)
@@ -268,6 +427,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: cwd || runConfig.cwd,
       contextUsage: existingThread?.contextUsage,
       config: runConfig,
+      permissionBridgeConfigPath,
     };
 
     // 사용자 메시지 추가 + 저장
@@ -623,6 +783,8 @@ export class ClaudeAdapter implements AgentAdapter {
       if (!this.isCurrentRun(threadId, runId, proc)) return;
       flushStderrBuffer();
       this.streamingBuffers.delete(threadId);
+      this.rejectPendingApprovalsForThread(threadId, 'Claude session ended before the permission request was answered.');
+      this.cleanupPermissionBridgeConfig(threadInfo);
       threadInfo.process = null as unknown as ChildProcess;
       threadInfo.runId = undefined;
       threadInfo.timeout = undefined;
@@ -665,6 +827,8 @@ export class ClaudeAdapter implements AgentAdapter {
       clearTimeout(processTimeout);
       if (!this.isCurrentRun(threadId, runId, proc)) return;
       this.streamingBuffers.delete(threadId);
+      this.rejectPendingApprovalsForThread(threadId, 'Claude session failed before the permission request was answered.');
+      this.cleanupPermissionBridgeConfig(threadInfo);
       threadInfo.process = null as unknown as ChildProcess;
       threadInfo.runId = undefined;
       threadInfo.timeout = undefined;
@@ -753,6 +917,58 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: existingThread?.cwd || overrideConfig?.cwd || baseConfig.cwd || this.config?.cwd,
       env: baseConfig.env ? { ...baseConfig.env } : undefined,
     };
+  }
+
+  private createPermissionBridgeConfig(threadId: string): string | undefined {
+    if (
+      !this.options.permissionApiBaseUrl
+      || !this.options.permissionApiToken
+      || !this.options.permissionBridgeScriptPath
+    ) {
+      return undefined;
+    }
+
+    const configPath = join(tmpdir(), `rca-claude-permission-${randomUUID()}.json`);
+    const config = {
+      mcpServers: {
+        'rca-permission': {
+          type: 'stdio',
+          command: process.execPath,
+          args: [this.options.permissionBridgeScriptPath],
+          env: {
+            RCA_CLAUDE_PERMISSION_API_URL: `${this.options.permissionApiBaseUrl}/api/internal/claude/permission-request`,
+            RCA_CLAUDE_PERMISSION_API_TOKEN: this.options.permissionApiToken,
+            RCA_CLAUDE_THREAD_ID: threadId,
+          },
+        },
+      },
+    };
+
+    writeFileSync(configPath, JSON.stringify(config), 'utf-8');
+    return configPath;
+  }
+
+  private cleanupPermissionBridgeConfig(thread: ThreadInfo): void {
+    if (!thread.permissionBridgeConfigPath) return;
+    try {
+      unlinkSync(thread.permissionBridgeConfigPath);
+    } catch {
+      // ignore cleanup failures
+    }
+    thread.permissionBridgeConfigPath = undefined;
+  }
+
+  private rejectPendingApprovalsForThread(threadId: string, reason: string): void {
+    const pendingIds = Array.from(this.pendingApprovals.entries())
+      .filter(([, pending]) => pending.threadId === threadId)
+      .map(([toolCallId]) => toolCallId);
+
+    for (const toolCallId of pendingIds) {
+      const pending = this.pendingApprovals.get(toolCallId);
+      if (!pending) continue;
+      this.pendingApprovals.delete(toolCallId);
+      pending.reject(reason);
+    }
   }
 
   private updateStatus(state: AgentStatus['state'], activeThread?: string, threadInfo?: ThreadInfo): void {

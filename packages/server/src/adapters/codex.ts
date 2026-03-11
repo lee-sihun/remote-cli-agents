@@ -84,6 +84,17 @@ export class CodexAdapter implements AgentAdapter {
 
   async start(config: AgentConfig): Promise<void> {
     this.config = config;
+    const savedThreads = store.loadThreads('codex');
+    for (const thread of savedThreads) {
+      this.threads.set(thread.id, {
+        id: thread.id,
+        title: thread.title,
+        messages: store.loadMessages(thread.id),
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        cwd: thread.cwd,
+      });
+    }
     await this.spawnAppServer();
   }
 
@@ -176,6 +187,41 @@ export class CodexAdapter implements AgentAdapter {
       updatedAt: t.updatedAt,
       cwd: t.cwd,
     }));
+  }
+
+  renameThread(threadId: string, title: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      store.renameThread('codex', threadId, title);
+      return;
+    }
+
+    thread.title = title;
+    store.saveThread('codex', {
+      id: thread.id,
+      agentType: 'codex',
+      title: thread.title,
+      lastMessage: thread.messages.length > 0
+        ? thread.messages[thread.messages.length - 1].content.slice(0, 100)
+        : undefined,
+      messageCount: thread.messages.length,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      cwd: thread.cwd,
+      contextUsage: this.status.contextUsage,
+    });
+  }
+
+  deleteThread(threadId: string): void {
+    this.accumulatedText.delete(threadId);
+    this.currentToolCalls.delete(threadId);
+    this.collectedToolCalls.delete(threadId);
+    this.threads.delete(threadId);
+    store.deleteThread('codex', threadId);
+
+    if (this.status.activeThread === threadId) {
+      this.updateStatus('idle');
+    }
   }
 
   // app-server 프로세스 생성
@@ -346,6 +392,9 @@ export class CodexAdapter implements AgentAdapter {
   // Codex 이벤트 처리
   private handleEvent(method: string, params: CodexItemDelta): void {
     const threadId = params.threadId || this.status.activeThread || '';
+    if (!threadId || !this.threads.has(threadId)) {
+      return;
+    }
 
     switch (method) {
       case 'turn/started': {
