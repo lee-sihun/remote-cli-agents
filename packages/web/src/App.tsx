@@ -467,7 +467,7 @@ export default function App() {
         </header>
 
         {/* Main view */}
-        <div className="flex-1 flex flex-col overflow-hidden relative">
+        <div className="flex-1 flex flex-col overflow-hidden">
           {viewMode === 'terminal' ? (
             <div className="flex-1 p-2 sm:p-4">
               <TerminalView
@@ -477,25 +477,27 @@ export default function App() {
               />
             </div>
           ) : (
-            <ChatView
-              messages={currentMessages}
-              streamingContent={currentStreaming}
-              activeToolCalls={currentToolCalls}
-            />
-          )}
+            <div className="flex-1 relative overflow-hidden">
+              <ChatView
+                messages={currentMessages}
+                streamingContent={currentStreaming}
+                activeToolCalls={currentToolCalls}
+              />
 
-          {/* 실행 중 오버레이 */}
-          {isRunning && viewMode === 'chat' && (
-            <div className="absolute bottom-0 left-0 right-0 flex justify-center pb-3 pointer-events-none z-10">
-              <button
-                onClick={handleInterrupt}
-                className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-(--bg-secondary) border border-(--border) shadow-lg text-xs text-(--text-muted) hover:bg-(--bg-tertiary) hover:text-(--text-primary) transition-colors"
-              >
-                <Loader2 size={12} className="animate-spin" />
-                <span>Agent is working...</span>
-                <Square size={10} fill="currentColor" className="text-(--error)" />
-                <span className="text-(--error)">Stop</span>
-              </button>
+              {/* 실행 중 오버레이 (채팅 영역 하단) */}
+              {isRunning && (
+                <div className="absolute bottom-0 left-0 right-0 flex justify-center pb-3 pointer-events-none z-10">
+                  <button
+                    onClick={handleInterrupt}
+                    className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-(--bg-secondary) border border-(--border) shadow-lg text-xs text-(--text-muted) hover:bg-(--bg-tertiary) hover:text-(--text-primary) transition-colors"
+                  >
+                    <Loader2 size={12} className="animate-spin" />
+                    <span>Agent is working...</span>
+                    <Square size={10} fill="currentColor" className="text-(--error)" />
+                    <span className="text-(--error)">Stop</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -507,7 +509,7 @@ export default function App() {
 
           {/* Input + settings */}
           {viewMode === 'chat' && (
-            <div className="border-t border-(--border) bg-(--bg-primary)">
+            <div className="bg-(--bg-primary)">
               <MessageInput
                 onSend={handleSendMessage}
                 onInterrupt={handleInterrupt}
