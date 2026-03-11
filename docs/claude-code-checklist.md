@@ -4,7 +4,10 @@
 > 대상: `packages/server/src/adapters/claude.ts`, `server.ts`, `store.ts`, `packages/web/src/`
 > 목적: Codex 등 외부 검증용
 > 비고: `[x]`는 현재 코드, 자동화 테스트(Vitest), 실환경 `claude` CLI, 또는 PinchTab 기반 브라우저 검증으로 확인한 항목
-> 실행 메모: 실환경 스모크 테스트는 `npm run test:claude`
+> 실행 메모:
+> - Claude CLI 스모크 테스트: `npm run test:claude`
+> - Windows 프로세스 종료 검증: `npm run test:windows-kill`
+> - PinchTab 브라우저 E2E: `npm run test:pinchtab`
 
 ---
 
@@ -13,14 +16,14 @@
 ### 1-1. stdin 관리
 - [x] `-p` 모드에서 `proc.stdin.write(message)` → `proc.stdin.end()` 호출
 - [ ] stdin 닫힌 상태에서 `approve()` 호출 시 stdin.write 가능한지 확인
-- [ ] `--resume` 세션에서 stdin end 후 프로세스가 정상 동작하는지 확인
-- [ ] 매우 긴 프롬프트 (수만 자) stdin 전달 시 버퍼 오버플로 가능성
+- [x] `--resume` 세션에서 stdin end 후 프로세스가 정상 동작하는지 확인
+- [x] 매우 긴 프롬프트 (수만 자) stdin 전달 시 버퍼 오버플로 가능성
 
 ### 1-2. 프로세스 종료
-- [ ] Windows에서 `proc.kill()` (SIGTERM 없이) 실제로 프로세스 트리 전체 종료되는지
-- [ ] `shell: true`로 생성된 프로세스에서 kill 시 자식 프로세스(cmd.exe → claude.exe)도 종료되는지
-- [ ] 타임아웃 (5분) 이후 프로세스가 실제로 종료되는지
-- [ ] `close` 이벤트가 `kill()` 후 확실히 발생하는지 (zombie 프로세스 가능성)
+- [x] Windows에서 `proc.kill()` (SIGTERM 없이) 실제로 프로세스 트리 전체 종료되는지
+- [x] `shell: true`로 생성된 프로세스에서 kill 시 자식 프로세스(cmd.exe → claude.exe)도 종료되는지
+- [x] 타임아웃 (5분) 이후 프로세스가 실제로 종료되는지
+- [x] `close` 이벤트가 `kill()` 후 확실히 발생하는지 (zombie 프로세스 가능성)
 
 ### 1-3. 동시 실행
 - [x] 같은 threadId로 `sendMessage` 연속 호출 시 이전 프로세스 kill → 새 프로세스 spawn 정상 동작
@@ -39,14 +42,14 @@
 - [x] Claude Code가 `--output-format stream-json`에서 실제로 어떤 이벤트를 보내는지 CLI 직접 검증
 
 ### 2-2. 텍스트 델타 vs 전체 텍스트
-- [ ] `assistant` 이벤트의 `text`가 델타(증분)인지 전체 텍스트인지 확인
-- [ ] `accumulatedText`에 중복 누적되지 않는지 (같은 텍스트가 여러 이벤트로 오는 경우)
-- [ ] `result.result` 텍스트와 `accumulatedText`가 동일한 내용인지 (중복 가능성)
+- [x] 표준 `stream-json`에서는 `assistant` text 블록 누적값이 최종 응답과 일치하고, partial delta는 `--include-partial-messages`의 `stream_event`로 별도 제공되는지 확인
+- [x] `accumulatedText`에 중복 누적되지 않는지 (같은 텍스트가 여러 이벤트로 오는 경우)
+- [x] `result.result` 텍스트와 `accumulatedText`가 동일한 내용인지 (중복 가능성)
 
 ### 2-3. tool_use / tool_result 흐름
-- [ ] `tool_use` → `tool_result` 순서가 항상 보장되는지
+- [x] `tool_use` → `tool_result` 순서가 현재 CLI 스모크 범위에서 보장되는지
 - [x] `tool_result.tool_use_id`가 항상 존재하는지 (fallback으로 `lastToolCallId` 사용 중)
-- [ ] 다중 tool_use가 한 `assistant` 이벤트에 올 수 있는지
+- [x] 다중 tool_use가 한 `assistant` 이벤트에 올 수 있는지
 - [ ] `tool_result` 없이 다음 `assistant`가 오는 경우 (도구 실행 실패 시)
 - [x] `pendingToolCalls` Map에 남은 채 result 이벤트가 오면 status가 'completed'로 처리되는지
 
@@ -70,15 +73,15 @@
 ## 4. 컨텍스트 사용량
 
 ### 4-1. 토큰 계산
-- [ ] `input_tokens + cache_read_input_tokens` 합산이 전체 입력 컨텍스트를 정확히 반영하는지
-- [ ] `cache_creation_input_tokens`가 `input_tokens`의 부분집합인지 (Anthropic API 문서 확인)
-- [ ] `output_tokens`가 컨텍스트 윈도우 사용량에 포함되어야 하는지 (output도 다음 턴의 input에 포함됨)
+- [x] `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` 합산이 전체 입력 컨텍스트를 정확히 반영하는지
+- [x] `cache_creation_input_tokens`가 `input_tokens`의 부분집합이 아니라 별도 항목인지 (Anthropic API 문서 확인)
+- [x] `output_tokens`가 컨텍스트 윈도우 사용량에 포함되어야 하는지 (output도 같은 컨텍스트 한도 안에서 계산)
 
 ### 4-2. 컨텍스트 윈도우 크기 추정
-- [ ] 모델명 기반 추정 (`1m` → 100만, 나머지 → 20만)이 현재 모델 라인업과 일치하는지
+- [x] 모델명 기반 추정 (`1m` → 100만, 나머지 → 20만)이 현재 모델 라인업과 일치하는지
 - [x] `result.modelUsage[*].contextWindow`가 있으면 실제 값을 우선 사용
-- [ ] `sonnet`, `opus`, `haiku` 각각의 실제 컨텍스트 윈도우 크기
-- [ ] `opusplan` 같은 커스텀 모델명 처리
+- [x] `sonnet`, `opus`, `haiku` 각각의 실제 컨텍스트 윈도우 크기
+- [x] `opusplan` 같은 커스텀 모델명 처리
 
 ### 4-3. 스레드별 관리
 - [x] `threadInfo.contextUsage`와 `this.status.contextUsage` 동기화 (스레드 전환 시)
@@ -114,12 +117,12 @@
 ### 6-2. 스트리밍 상태 동기화
 - [x] `streamingBuffers`에 현재 진행 중인 content + toolCalls 정확히 추적
 - [x] `get_thread_state` 응답에 streaming 상태가 포함되는지
-- [ ] 스레드 전환 시 이전 스레드의 스트리밍 이벤트가 계속 브로드캐스트되는데 클라이언트에서 올바른 스레드에 매핑하는지
+- [x] 스레드 전환 시 이전 스레드의 스트리밍 이벤트가 계속 브로드캐스트되는데 클라이언트에서 올바른 스레드에 매핑하는지
 
 ### 6-3. 상태 전환
 - [x] `running` → `idle` 전환: `hasActiveThreads` 체크 로직
 - [x] 여러 스레드 동시 실행 시 `status.activeThread`가 단일 값만 추적하되, 종료 시 남은 활성 스레드로 재정렬
-- [ ] 클라이언트의 `isRunning` 체크: `agentStatus.activeThread === store.activeThread`
+- [x] 클라이언트의 `isRunning` 체크: `agentStatus.activeThread === store.activeThread`
 
 ---
 
@@ -135,12 +138,12 @@
 ### 7-2. 권한 모드
 - [x] `--dangerously-skip-permissions` (bypassPermissions) 동작 확인
 - [x] `--permission-mode plan/acceptEdits` 동작 확인
-- [ ] 권한 모드 변경 시 실행 중 프로세스에 영향 없는지 (config만 갱신)
+- [x] 권한 모드 변경 시 실행 중 프로세스에 영향 없는지 (config만 갱신)
 
 ### 7-3. effortLevel
 - [x] `--effort` 플래그 동작 확인
 - [x] 어댑터가 `CLAUDE_CODE_EFFORT_LEVEL` 대신 `--effort`를 사용하도록 정렬
-- [ ] Haiku에서 effortLevel 무시 처리 확인
+- [x] Haiku에서 effortLevel을 별도 차단하지 않아도 CLI가 정상 처리하는지 확인
 
 ---
 
@@ -153,7 +156,7 @@
 - [x] `MAX_MESSAGES_PER_THREAD = 200` 제한 적용
 
 ### 8-2. 데이터 무결성
-- [ ] 프로세스 비정상 종료 시 마지막 메시지가 저장되는지
+- [x] 프로세스 비정상 종료 시 마지막 메시지가 저장되는지
 - [ ] 동시 writeFileSync 호출 시 파일 손상 가능성 (같은 threads.json에 동시 쓰기)
 - [ ] `loadMessages` → `push` → `saveMessages` 패턴에서 race condition 가능성
 
@@ -169,7 +172,7 @@
 ### 9-2. message_complete 처리
 - [x] `activeToolCalls`에 있던 도구가 `message.toolCalls`에도 추가되는 로직 (중복 가능성)
 - [x] `message_complete` 후 `streamingContent` 삭제 확인
-- [ ] 서버에서 `message_complete` 없이 연결 끊김 시 UI 상태
+- [x] 서버에서 `message_complete` 없이 연결 끊김 시 UI 상태
 
 ### 9-3. 새 대화 생성
 - [x] `handleSendMessage`에서 `threadId` 생성 (클라이언트) vs `server.ts`의 `randomUUID()` (서버) 중복 확인
@@ -180,6 +183,6 @@
 ## 10. 보안/안정성
 
 - [x] `CLAUDECODE` 환경변수 삭제 (중첩 실행 방지) 동작 확인
-- [ ] `shell: true` (Windows)에서 명령어 인젝션 가능성 (프롬프트가 stdin으로 전달되므로 낮음)
+- [x] `shell: true` (Windows)에서 명령어 인젝션 가능성 (프롬프트가 stdin으로 전달되므로 낮음)
 - [x] WebSocket 메시지 크기 제한 (1MB) 적용 확인
-- [ ] 토큰/인증 검증이 WebSocket 업그레이드 시 올바르게 동작하는지
+- [x] 토큰/인증 검증이 WebSocket 업그레이드 시 올바르게 동작하는지
