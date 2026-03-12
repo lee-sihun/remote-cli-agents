@@ -2,6 +2,7 @@ import type {
   AgentType,
   AgentConfig,
   AgentEvent,
+  AgentOptionDef,
   AgentStatus,
   ThreadSummary,
   ToolCall,
@@ -34,6 +35,7 @@ export interface AgentAdapter {
   // 상태
   getStatus(): AgentStatus;
   getThreads(): Promise<ThreadSummary[]>;
+  getOptions?(): AgentOptionDef[] | Promise<AgentOptionDef[]>;
   renameThread?(threadId: string, title: string): Promise<void> | void;
   deleteThread?(threadId: string): Promise<void> | void;
 

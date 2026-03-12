@@ -13,6 +13,7 @@ import { handleClientMessage, parseClientMessagePayload, sendToClient } from './
 interface FakeAdapter {
   approve?: (threadId: string, toolCallId: string, approved: boolean) => void;
   deleteThread?: (threadId: string) => void | Promise<void>;
+  getOptions?: () => unknown[] | Promise<unknown[]>;
   getStatus: () => AgentStatus;
   getStreamingState?: (threadId: string) => { content: string; toolCalls: [] } | null;
   getThreads: () => Promise<ThreadSummary[]>;
@@ -139,6 +140,44 @@ describe('server helpers', () => {
       agentType: 'claude',
       threads: await adapter.getThreads(),
     }));
+  });
+
+  it('prefers adapter-provided options for list_agents responses', async () => {
+    const ws = createFakeWebSocket();
+    const adapter = createFakeAdapter({
+      type: 'codex',
+      name: 'Codex',
+      getOptions: () => [{
+        key: 'sandboxMode',
+        label: 'Access',
+        type: 'select',
+        options: [{ value: 'workspace-write', label: 'Basic Access' }],
+      }],
+    });
+    const adapters = new Map<AgentType, FakeAdapter>([['codex', adapter]]);
+
+    await handleClientMessage(
+      ws as unknown as WebSocket,
+      { type: 'list_agents' },
+      adapters as never,
+      'C:/workspace',
+    );
+
+    const payload = JSON.parse(String(ws.send.mock.calls.at(-1)?.[0] || '{}'));
+    expect(payload).toMatchObject({
+      type: 'agents_list',
+    });
+    expect(payload.agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'codex',
+        options: [{
+          key: 'sandboxMode',
+          label: 'Access',
+          type: 'select',
+          options: [{ value: 'workspace-write', label: 'Basic Access' }],
+        }],
+      }),
+    ]));
   });
 
   it('renames a thread and returns the refreshed list', async () => {
@@ -278,6 +317,43 @@ describe('server helpers', () => {
     }));
     expect(adapter.start).not.toHaveBeenCalled();
     expect(adapter.stop).not.toHaveBeenCalled();
+  });
+
+  it('returns an error instead of throwing when agent restart fails during select_agent', async () => {
+    const ws = createFakeWebSocket();
+    const adapter = createFakeAdapter({
+      type: 'codex',
+      name: 'Codex',
+      start: vi.fn(async () => {
+        throw new Error('Codex app-server exited with code 1');
+      }),
+    });
+    const adapters = new Map<AgentType, FakeAdapter>([['codex', adapter]]);
+
+    await expect(handleClientMessage(
+      ws as unknown as WebSocket,
+      {
+        type: 'select_agent',
+        agentType: 'codex',
+        config: {
+          type: 'codex',
+          model: 'gpt-5.4',
+        },
+      },
+      adapters as never,
+      'C:/workspace',
+    )).resolves.toBeUndefined();
+
+    expect(adapter.stop).toHaveBeenCalled();
+    expect(adapter.start).toHaveBeenCalledWith({
+      type: 'codex',
+      model: 'gpt-5.4',
+    });
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({
+      type: 'error',
+      message: 'Codex app-server exited with code 1',
+      code: 'AGENT_RESTART_FAILED',
+    }));
   });
 
   it('logs WebSocket send failures without throwing', () => {

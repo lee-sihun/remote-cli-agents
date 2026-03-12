@@ -18,8 +18,10 @@ export interface AgentConfig {
   env?: Record<string, string>;
   permissionMode?: string;
   approvalMode?: string;
+  sandboxMode?: string;
   model?: string;
   effortLevel?: string;
+  serviceTier?: string;
 }
 
 // ─── 에이전트별 설정 옵션 정의 ───
@@ -85,24 +87,57 @@ export const CODEX_OPTIONS: AgentOptionDef[] = [
     type: 'select',
     options: [
       { value: '', label: 'Default' },
-      { value: 'codex-mini-latest', label: 'Codex Mini' },
-      { value: 'gpt-4.1', label: 'GPT-4.1' },
-      { value: 'o4-mini', label: 'o4-mini' },
-      { value: 'o3', label: 'o3' },
-      { value: 'o3-mini', label: 'o3-mini' },
+      { value: 'gpt-5.4', label: 'gpt-5.4' },
+      { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
+      { value: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark' },
     ],
     defaultValue: '',
   },
   {
+    key: 'effortLevel',
+    label: 'Reasoning',
+    type: 'select',
+    options: [
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+      { value: 'xhigh', label: 'XHigh' },
+    ],
+    defaultValue: 'medium',
+  },
+  {
     key: 'approvalMode',
-    label: 'Mode',
+    label: 'Approval',
     type: 'select',
     options: [
       { value: 'on-request', label: 'On Request' },
-      { value: 'full-auto', label: 'Full Auto' },
-      { value: 'never', label: 'Bypass' },
+      { value: 'untrusted', label: 'Trusted Only' },
+      { value: 'never', label: 'Never Ask' },
     ],
     defaultValue: 'on-request',
+  },
+  {
+    key: 'sandboxMode',
+    label: 'Access',
+    type: 'select',
+    options: [
+      { value: 'workspace-write', label: 'Basic Access' },
+      { value: 'danger-full-access', label: 'Full Access' },
+      { value: 'read-only', label: 'Read Only' },
+    ],
+    defaultValue: 'workspace-write',
+  },
+  {
+    key: 'serviceTier',
+    label: 'Speed',
+    type: 'select',
+    options: [
+      { value: '', label: 'Default' },
+      { value: 'fast', label: 'Fast' },
+      { value: 'flex', label: 'Flex' },
+    ],
+    defaultValue: '',
+    visibleWhen: { model: ['', 'gpt-5.4'] },
   },
 ];
 

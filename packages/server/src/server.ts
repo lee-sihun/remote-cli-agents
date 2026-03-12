@@ -241,7 +241,16 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
         return;
       }
 
-      await handleClientMessage(ws, parsed.message, adapters, cwd);
+      try {
+        await handleClientMessage(ws, parsed.message, adapters, cwd);
+      } catch (err) {
+        console.error('[server] Failed to handle client message:', err);
+        sendToClient(ws, {
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Failed to handle client message',
+          code: 'SERVER_MESSAGE_ERROR',
+        });
+      }
     });
 
     ws.on('close', () => {
@@ -385,6 +394,10 @@ async function initializeAdapters(
 async function getAgentsList(
   adapters: Map<AgentType, AgentAdapter>,
 ): Promise<AgentInfo[]> {
+  const codexOptions = adapters.get('codex')?.getOptions
+    ? await adapters.get('codex')!.getOptions!()
+    : AGENT_OPTIONS.codex;
+
   const agents: AgentInfo[] = [
     {
       type: 'claude',
@@ -397,8 +410,8 @@ async function getAgentsList(
       type: 'codex',
       name: 'Codex',
       available: adapters.has('codex'),
-      description: 'OpenAI Codex - JSON-RPC app-server',
-      options: AGENT_OPTIONS.codex,
+      description: 'OpenAI Codex - app-server protocol',
+      options: codexOptions,
     },
     {
       type: 'gemini',
@@ -591,8 +604,17 @@ export async function handleClientMessage(
           return;
         }
 
-        await adapter.stop();
-        await adapter.start(msg.config);
+        try {
+          await adapter.stop();
+          await adapter.start(msg.config);
+        } catch (err) {
+          sendToClient(ws, {
+            type: 'error',
+            message: err instanceof Error ? err.message : `Failed to restart ${msg.agentType}`,
+            code: 'AGENT_RESTART_FAILED',
+          });
+          return;
+        }
       }
 
       const agents = await getAgentsList(adapters);

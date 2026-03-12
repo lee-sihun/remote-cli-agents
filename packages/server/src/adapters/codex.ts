@@ -1,19 +1,21 @@
-import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type {
   AgentConfig,
   AgentEvent,
-  AgentStatus,
   AgentMessage,
-  ToolCall,
+  AgentOptionDef,
+  AgentStatus,
+  ContextUsage,
   ThreadSummary,
+  ToolCall,
 } from '@rca/shared';
+import { CODEX_OPTIONS } from '@rca/shared';
 import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
 import { terminateChildProcess } from '../process.js';
 
-// JSON-RPC 요청
 interface JsonRpcRequest {
   jsonrpc: '2.0';
   id: number;
@@ -21,34 +23,36 @@ interface JsonRpcRequest {
   params?: Record<string, unknown>;
 }
 
-// JSON-RPC 응답
-interface JsonRpcResponse {
-  jsonrpc: '2.0';
-  id?: number;
-  result?: unknown;
-  error?: { code: number; message: string };
-  method?: string;
+interface JsonRpcSuccessResponse {
+  jsonrpc?: '2.0';
+  id: number;
+  result: unknown;
+}
+
+interface JsonRpcErrorResponse {
+  jsonrpc?: '2.0';
+  id: number;
+  error: { code: number; message: string };
+}
+
+interface JsonRpcNotification {
+  jsonrpc?: '2.0';
+  method: string;
   params?: Record<string, unknown>;
 }
 
-// Codex 이벤트 파라미터 타입
-interface CodexItemDelta {
-  threadId?: string;
-  type?: string;
-  text?: string;
-  toolCallId?: string;
-  toolName?: string;
-  toolInput?: Record<string, unknown>;
-  toolOutput?: string;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    total_tokens?: number;
-  };
-  [key: string]: unknown;
+interface JsonRpcServerRequest extends JsonRpcNotification {
+  id: number;
 }
 
-// 스레드 정보
+interface CodexModelDescriptor {
+  model: string;
+  displayName: string;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort: string;
+  isDefault: boolean;
+}
+
 interface ThreadInfo {
   id: string;
   title: string;
@@ -56,7 +60,55 @@ interface ThreadInfo {
   createdAt: number;
   updatedAt: number;
   cwd?: string;
+  model?: string;
+  contextUsage?: ContextUsage;
+  config?: AgentConfig;
+  path?: string;
 }
+
+interface PendingRpcRequest {
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingApprovalRequest {
+  id: number;
+  method: string;
+  threadId: string;
+  toolCall: ToolCall;
+  params: Record<string, unknown>;
+}
+
+interface CodexThreadPayload {
+  id?: string;
+  preview?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  cwd?: string;
+  name?: string | null;
+  path?: string | null;
+}
+
+interface CodexTurnPayload {
+  id?: string;
+  status?: string;
+  error?: { message?: string | null } | null;
+}
+
+interface CodexThreadStartResult {
+  thread?: CodexThreadPayload;
+  model?: string;
+  cwd?: string;
+  approvalPolicy?: string;
+  reasoningEffort?: string | null;
+}
+
+const DEFAULT_CODEX_MODEL = 'gpt-5.4';
+const DEFAULT_CODEX_REASONING = 'medium';
+const DEFAULT_CODEX_SANDBOX = 'workspace-write';
+const DEFAULT_CODEX_APPROVAL = 'on-request';
+const DEFAULT_CODEX_SERVICE_TIER = '';
 
 export class CodexAdapter implements AgentAdapter {
   readonly name = 'Codex';
@@ -67,34 +119,25 @@ export class CodexAdapter implements AgentAdapter {
   private eventHandlers: AgentEventHandler[] = [];
   private config: AgentConfig | null = null;
   private requestId = 0;
-  private pendingRequests = new Map<number, {
-    resolve: (value: unknown) => void;
-    reject: (reason: unknown) => void;
-  }>();
+  private pendingRequests = new Map<number, PendingRpcRequest>();
+  private pendingApprovalRequests = new Map<string, PendingApprovalRequest>();
   private initialized = false;
   private status: AgentStatus = {
     agent: 'codex',
     state: 'idle',
   };
 
-  // 현재 진행 중인 응답 텍스트 누적
+  private loadedThreadIds = new Set<string>();
+  private activeTurns = new Map<string, string>();
   private accumulatedText = new Map<string, string>();
-  private currentToolCalls = new Map<string, ToolCall>();
-  private collectedToolCalls = new Map<string, ToolCall[]>(); // 완료된 도구 수집
+  private currentMessageIds = new Map<string, string>();
+  private activeToolCalls = new Map<string, Map<string, ToolCall>>();
+  private collectedToolCalls = new Map<string, Map<string, ToolCall>>();
+  private availableModels: CodexModelDescriptor[] = [];
 
   async start(config: AgentConfig): Promise<void> {
-    this.config = config;
-    const savedThreads = store.loadThreads('codex');
-    for (const thread of savedThreads) {
-      this.threads.set(thread.id, {
-        id: thread.id,
-        title: thread.title,
-        messages: store.loadMessages(thread.id),
-        createdAt: thread.createdAt,
-        updatedAt: thread.updatedAt,
-        cwd: thread.cwd,
-      });
-    }
+    this.config = normalizeCodexConfig(config);
+    this.restoreStoredThreads();
     await this.spawnAppServer();
   }
 
@@ -104,10 +147,22 @@ export class CodexAdapter implements AgentAdapter {
     }
     this.process = null;
     this.initialized = false;
-    this.threads.clear();
+
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Codex app-server stopped'));
+    }
+
     this.pendingRequests.clear();
+    this.pendingApprovalRequests.clear();
+    this.loadedThreadIds.clear();
+    this.activeTurns.clear();
     this.accumulatedText.clear();
-    this.currentToolCalls.clear();
+    this.currentMessageIds.clear();
+    this.activeToolCalls.clear();
+    this.collectedToolCalls.clear();
+    this.threads.clear();
+    this.availableModels = [];
     this.updateStatus('idle');
   }
 
@@ -120,43 +175,57 @@ export class CodexAdapter implements AgentAdapter {
     });
   }
 
-  sendMessage(threadId: string | undefined, message: string, _config?: AgentConfig): void {
+  getOptions(): AgentOptionDef[] {
+    return buildCodexOptionDefs(this.availableModels);
+  }
+
+  sendMessage(threadId: string | undefined, message: string, config?: AgentConfig): void {
     const tid = threadId || randomUUID();
-    const existingThread = this.threads.get(tid);
+    const runConfig = normalizeCodexConfig({
+      ...this.config,
+      ...config,
+      type: 'codex',
+    });
 
-    if (!existingThread) {
-      // 새 스레드 생성
-      const now = Date.now();
-      this.threads.set(tid, {
-        id: tid,
-        title: message.slice(0, 50),
-        messages: [],
-        createdAt: now,
-        updatedAt: now,
-        cwd: this.config?.cwd,
-      });
-
-      // 스레드 시작
-      this.sendRpc('thread/start', { threadId: tid })
-        .then(() => this.startTurn(tid, message))
-        .catch((err) => {
-          this.emit({
-            type: 'error',
-            threadId: tid,
-            agentType: 'codex',
-            error: `Failed to start thread: ${String(err)}`,
-          });
-        });
-    } else {
-      // 기존 스레드에 메시지 전송
-      this.startTurn(tid, message);
-    }
+    void this.runTurn(tid, message, runConfig);
   }
 
   interrupt(threadId: string): void {
-    this.sendRpc('turn/interrupt', { threadId }).catch(() => {
-      // 인터럽트 실패 시 무시
+    const turnId = this.activeTurns.get(threadId);
+    if (!turnId) {
+      return;
+    }
+
+    void this.sendRpc('turn/interrupt', {
+      threadId,
+      turnId,
+    }).catch(() => {
+      // 인터럽트 실패는 무시
     });
+  }
+
+  approve(threadId: string, toolCallId: string, approved: boolean): void {
+    const approval = this.pendingApprovalRequests.get(toolCallId);
+    if (!approval || approval.threadId !== threadId) {
+      return;
+    }
+
+    const response = buildApprovalResponse(approval.method, approval.params, approved);
+    this.writeJson({
+      jsonrpc: '2.0',
+      id: approval.id,
+      result: response,
+    });
+
+    this.pendingApprovalRequests.delete(toolCallId);
+
+    const active = this.activeToolCalls.get(threadId);
+    const tool = active?.get(toolCallId);
+    if (tool) {
+      tool.status = approved ? 'running' : 'failed';
+    }
+
+    this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
   }
 
   onEvent(handler: AgentEventHandler): void {
@@ -164,29 +233,30 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   getStatus(): AgentStatus {
-    return { ...this.status };
+    return {
+      ...this.status,
+      contextUsage: this.status.contextUsage ? { ...this.status.contextUsage } : undefined,
+    };
   }
 
   getStreamingState(threadId: string): ThreadStreamingState | null {
     const content = this.accumulatedText.get(threadId);
-    if (content === undefined) return null;
-    const tool = this.currentToolCalls.get(threadId);
-    return { content, toolCalls: tool ? [tool] : [] };
+    const toolCalls = Array.from(this.activeToolCalls.get(threadId)?.values() || []).map((tool) => ({ ...tool }));
+
+    if (content === undefined && toolCalls.length === 0) {
+      return null;
+    }
+
+    return {
+      content: content || '',
+      toolCalls,
+    };
   }
 
   async getThreads(): Promise<ThreadSummary[]> {
-    return Array.from(this.threads.values()).map((t) => ({
-      id: t.id,
-      agentType: 'codex' as const,
-      title: t.title,
-      lastMessage: t.messages.length > 0
-        ? t.messages[t.messages.length - 1].content.slice(0, 100)
-        : undefined,
-      messageCount: t.messages.length,
-      createdAt: t.createdAt,
-      updatedAt: t.updatedAt,
-      cwd: t.cwd,
-    }));
+    return Array.from(this.threads.values())
+      .map((thread) => toThreadSummary(thread))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   renameThread(threadId: string, title: string): void {
@@ -197,53 +267,49 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     thread.title = title;
-    store.saveThread('codex', {
-      id: thread.id,
-      agentType: 'codex',
-      title: thread.title,
-      lastMessage: thread.messages.length > 0
-        ? thread.messages[thread.messages.length - 1].content.slice(0, 100)
-        : undefined,
-      messageCount: thread.messages.length,
-      createdAt: thread.createdAt,
-      updatedAt: thread.updatedAt,
-      cwd: thread.cwd,
-      contextUsage: this.status.contextUsage,
-    });
+    thread.updatedAt = Date.now();
+    persistThread(thread);
   }
 
   deleteThread(threadId: string): void {
+    this.pendingApprovalRequests.forEach((request, toolCallId) => {
+      if (request.threadId === threadId) {
+        this.pendingApprovalRequests.delete(toolCallId);
+      }
+    });
+    this.activeTurns.delete(threadId);
+    this.loadedThreadIds.delete(threadId);
     this.accumulatedText.delete(threadId);
-    this.currentToolCalls.delete(threadId);
+    this.currentMessageIds.delete(threadId);
+    this.activeToolCalls.delete(threadId);
     this.collectedToolCalls.delete(threadId);
     this.threads.delete(threadId);
     store.deleteThread('codex', threadId);
 
     if (this.status.activeThread === threadId) {
-      this.updateStatus('idle');
+      this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
     }
   }
 
-  // app-server 프로세스 생성
+  private restoreStoredThreads(): void {
+    const savedThreads = store.loadThreads('codex');
+    for (const thread of savedThreads) {
+      this.threads.set(thread.id, {
+        id: thread.id,
+        title: thread.title,
+        messages: store.loadMessages(thread.id),
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+        cwd: thread.cwd,
+        model: thread.model,
+        contextUsage: thread.contextUsage,
+        config: thread.config,
+      });
+    }
+  }
+
   private async spawnAppServer(): Promise<void> {
-    const args = ['app-server'];
-
-    // 모델 설정
-    if (this.config?.model) {
-      args.push('--model', this.config.model);
-    }
-
-    // 승인 모드 설정
-    const approvalMode = (this.config as unknown as Record<string, unknown>)?.approvalMode as string | undefined;
-    if (approvalMode === 'full-auto') {
-      args.push('--full-auto');
-    } else if (approvalMode === 'never') {
-      args.push('--ask-for-approval', 'never');
-    } else if (approvalMode) {
-      args.push('--ask-for-approval', approvalMode);
-    }
-
-    const proc = spawn('codex', args, {
+    const proc = spawn('codex', ['app-server'], {
       cwd: this.config?.cwd || process.cwd(),
       env: { ...process.env, ...this.config?.env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -264,8 +330,12 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     proc.on('close', (code) => {
-      console.log(`[codex] app-server exited with code ${code}`);
       this.initialized = false;
+      for (const pending of this.pendingRequests.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(`Codex app-server exited with code ${String(code)}`));
+      }
+      this.pendingRequests.clear();
       this.updateStatus('error');
     });
 
@@ -274,16 +344,147 @@ export class CodexAdapter implements AgentAdapter {
       this.updateStatus('error');
     });
 
-    // initialization handshake
     await this.sendRpc('initialize', {
-      protocolVersion: '1.0',
       clientInfo: { name: 'rca-server', version: '0.1.0' },
+      capabilities: {
+        experimentalApi: true,
+      },
     });
 
     this.initialized = true;
+    await this.refreshModels();
   }
 
-  // JSON-RPC 요청 전송
+  private async refreshModels(): Promise<void> {
+    try {
+      const result = await this.sendRpc('model/list', {
+        cursor: null,
+        includeHidden: false,
+      }) as { data?: Array<Record<string, unknown>> };
+
+      this.availableModels = (result.data || [])
+        .map((model) => toCodexModelDescriptor(model))
+        .filter((model): model is CodexModelDescriptor => model !== null);
+    } catch (error) {
+      console.error('[codex] Failed to load model list:', error);
+      this.availableModels = [];
+    }
+  }
+
+  private async runTurn(threadId: string, message: string, config: AgentConfig): Promise<void> {
+    const threadExists = this.threads.has(threadId);
+    const thread = this.ensureThread(threadId, config, message);
+    const userMessage: AgentMessage = {
+      id: randomUUID(),
+      role: 'user',
+      content: message,
+      timestamp: Date.now(),
+    };
+
+    thread.messages.push(userMessage);
+    thread.updatedAt = userMessage.timestamp;
+    thread.config = config;
+    store.appendMessage(threadId, userMessage);
+    persistThread(thread);
+
+    this.accumulatedText.set(threadId, '');
+    this.currentMessageIds.set(threadId, randomUUID());
+    this.activeToolCalls.delete(threadId);
+    this.collectedToolCalls.set(threadId, new Map());
+
+    this.emit({
+      type: 'message_start',
+      threadId,
+      agentType: 'codex',
+    });
+
+    try {
+      await this.ensureThreadLoaded(thread, config, threadExists);
+      const result = await this.sendRpc('turn/start', {
+        threadId,
+        input: [
+          {
+            type: 'text',
+            text: message,
+            text_elements: [],
+          },
+        ],
+      }) as { turn?: CodexTurnPayload };
+
+      if (result.turn?.id) {
+        this.markTurnActive(threadId, result.turn.id);
+      } else {
+        this.updateStatus('running', threadId);
+      }
+    } catch (error) {
+      this.accumulatedText.delete(threadId);
+      this.currentMessageIds.delete(threadId);
+      this.activeToolCalls.delete(threadId);
+      this.collectedToolCalls.delete(threadId);
+      this.emit({
+        type: 'error',
+        threadId,
+        agentType: 'codex',
+        error: `Failed to start Codex turn: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
+    }
+  }
+
+  private ensureThread(threadId: string, config: AgentConfig, fallbackTitle: string): ThreadInfo {
+    const existing = this.threads.get(threadId);
+    if (existing) {
+      if (!existing.cwd) {
+        existing.cwd = config.cwd;
+      }
+      if (!existing.config) {
+        existing.config = config;
+      }
+      return existing;
+    }
+
+    const now = Date.now();
+    const thread: ThreadInfo = {
+      id: threadId,
+      title: summarizeTitle(fallbackTitle),
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+      cwd: config.cwd,
+      config,
+    };
+    this.threads.set(threadId, thread);
+    return thread;
+  }
+
+  private async ensureThreadLoaded(thread: ThreadInfo, config: AgentConfig, existingThread: boolean): Promise<void> {
+    if (this.loadedThreadIds.has(thread.id)) {
+      return;
+    }
+
+    const params = buildThreadConfigParams(config);
+    const result = existingThread
+      ? await this.sendRpc('thread/resume', {
+        threadId: thread.id,
+        persistExtendedHistory: false,
+        ...params,
+      }) as CodexThreadStartResult
+      : await this.sendRpc('thread/start', {
+        experimentalRawEvents: false,
+        persistExtendedHistory: false,
+        ...params,
+      }) as CodexThreadStartResult;
+
+    if (result.thread?.id && result.thread.id !== thread.id) {
+      this.threads.delete(thread.id);
+      thread.id = result.thread.id;
+      this.threads.set(thread.id, thread);
+    }
+
+    this.loadedThreadIds.add(thread.id);
+    this.updateThreadFromPayload(thread, result.thread, result.model, config);
+  }
+
   private sendRpc(method: string, params?: Record<string, unknown>): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.process || !this.process.stdin) {
@@ -299,221 +500,280 @@ export class CodexAdapter implements AgentAdapter {
         params,
       };
 
-      this.pendingRequests.set(id, { resolve, reject });
-
-      const data = JSON.stringify(request) + '\n';
-      this.process.stdin.write(data, (err) => {
-        if (err) {
-          this.pendingRequests.delete(id);
-          reject(err);
+      const timer = setTimeout(() => {
+        const pending = this.pendingRequests.get(id);
+        if (!pending) {
+          return;
         }
-      });
 
-      // 타임아웃 (30초)
-      setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id);
-          reject(new Error(`RPC timeout: ${method}`));
-        }
-      }, 30000);
+        this.pendingRequests.delete(id);
+        pending.reject(new Error(`RPC timeout: ${method}`));
+      }, 30_000);
+
+      this.pendingRequests.set(id, { resolve, reject, timer });
+      this.writeJson(request as unknown as Record<string, unknown>);
     });
   }
 
-  // turn 시작 (메시지 전송)
-  private async startTurn(threadId: string, message: string): Promise<void> {
-    const thread = this.threads.get(threadId);
-    if (!thread) return;
-
-    const now = Date.now();
-    thread.messages.push({
-      id: randomUUID(),
-      role: 'user',
-      content: message,
-      timestamp: now,
-    });
-    thread.updatedAt = now;
-
-    this.updateStatus('running', threadId);
-    this.accumulatedText.set(threadId, '');
-
-    this.emit({
-      type: 'message_start',
-      threadId,
-      agentType: 'codex',
-    });
-
-    try {
-      await this.sendRpc('turn/start', {
-        threadId,
-        message: { role: 'user', content: message },
-      });
-    } catch (err) {
-      this.emit({
-        type: 'error',
-        threadId,
-        agentType: 'codex',
-        error: `Failed to start turn: ${String(err)}`,
-      });
-      this.updateStatus('idle');
+  private writeJson(payload: Record<string, unknown>): void {
+    if (!this.process?.stdin) {
+      return;
     }
+
+    this.process.stdin.write(`${JSON.stringify(payload)}\n`);
   }
 
-  // stdout 라인 처리
   private handleLine(line: string): void {
     const trimmed = line.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      return;
+    }
 
-    let msg: JsonRpcResponse;
+    let parsed:
+      | JsonRpcSuccessResponse
+      | JsonRpcErrorResponse
+      | JsonRpcNotification
+      | JsonRpcServerRequest;
+
     try {
-      msg = JSON.parse(trimmed);
+      parsed = JSON.parse(trimmed) as typeof parsed;
     } catch {
       return;
     }
 
-    // JSON-RPC 응답 (id가 있는 경우)
-    if (msg.id !== undefined && this.pendingRequests.has(msg.id)) {
-      const pending = this.pendingRequests.get(msg.id)!;
-      this.pendingRequests.delete(msg.id);
+    if ('id' in parsed && typeof parsed.id === 'number' && !('method' in parsed)) {
+      const pending = this.pendingRequests.get(parsed.id);
+      if (!pending) {
+        return;
+      }
 
-      if (msg.error) {
-        pending.reject(new Error(msg.error.message));
+      clearTimeout(pending.timer);
+      this.pendingRequests.delete(parsed.id);
+
+      if ('error' in parsed) {
+        pending.reject(new Error(parsed.error.message));
       } else {
-        pending.resolve(msg.result);
+        pending.resolve(parsed.result);
       }
       return;
     }
 
-    // 이벤트 (notification - id가 없고 method가 있는 경우)
-    if (msg.method) {
-      this.handleEvent(msg.method, (msg.params || {}) as CodexItemDelta);
+    if ('id' in parsed && typeof parsed.id === 'number' && 'method' in parsed) {
+      this.handleServerRequest(parsed);
+      return;
+    }
+
+    if ('method' in parsed) {
+      this.handleNotification(parsed.method, parsed.params || {});
     }
   }
 
-  // Codex 이벤트 처리
-  private handleEvent(method: string, params: CodexItemDelta): void {
-    const threadId = params.threadId || this.status.activeThread || '';
+  private handleServerRequest(request: JsonRpcServerRequest): void {
+    const params = request.params || {};
+    const threadId = readString(params, 'threadId')
+      || readString(params, 'conversationId')
+      || this.currentActiveThread()
+      || '';
+
     if (!threadId || !this.threads.has(threadId)) {
+      this.writeJson({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: buildApprovalResponse(request.method, params, false),
+      });
       return;
     }
 
+    const toolCall = buildApprovalToolCall(request.method, params);
+    if (!toolCall) {
+      this.writeJson({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: buildApprovalResponse(request.method, params, false),
+      });
+      return;
+    }
+
+    const active = this.getOrCreateActiveTools(threadId);
+    active.set(toolCall.id, toolCall);
+    this.pendingApprovalRequests.set(toolCall.id, {
+      id: request.id,
+      method: request.method,
+      threadId,
+      toolCall,
+      params,
+    });
+
+    this.updateStatus('waiting_approval', threadId);
+    this.emit({
+      type: 'approval_required',
+      threadId,
+      agentType: 'codex',
+      tool: { ...toolCall },
+    });
+  }
+
+  private handleNotification(method: string, params: Record<string, unknown>): void {
     switch (method) {
-      case 'turn/started': {
-        this.collectedToolCalls.set(threadId, []);
-        this.updateStatus('running', threadId);
+      case 'thread/started': {
+        const payload = readRecord(params, 'thread');
+        const payloadId = payload ? readString(payload, 'id') : undefined;
+        if (!payload || !payloadId) {
+          return;
+        }
+        const thread = this.ensureThread(payloadId, this.config || { type: 'codex' }, readString(payload, 'preview') || payloadId);
+        this.loadedThreadIds.add(payloadId);
+        this.updateThreadFromPayload(thread, payload, undefined, thread.config || this.config || undefined);
         break;
       }
 
-      case 'item/delta': {
-        if (params.type === 'text' && params.text) {
-          // 텍스트 델타
-          const current = this.accumulatedText.get(threadId) || '';
-          this.accumulatedText.set(threadId, current + params.text);
+      case 'thread/name/updated': {
+        const threadId = readString(params, 'threadId');
+        const name = readString(params, 'threadName');
+        if (!threadId || !name) {
+          return;
+        }
+        const thread = this.threads.get(threadId);
+        if (!thread) {
+          return;
+        }
+        thread.title = name;
+        thread.updatedAt = Date.now();
+        persistThread(thread);
+        break;
+      }
 
+      case 'thread/status/changed': {
+        const threadId = readString(params, 'threadId');
+        const status = readRecord(params, 'status');
+        if (!threadId || !status || this.activeTurns.has(threadId)) {
+          return;
+        }
+        if (status.type === 'systemError') {
           this.emit({
-            type: 'message_delta',
+            type: 'error',
             threadId,
             agentType: 'codex',
-            content: params.text,
+            error: 'Codex thread entered systemError state.',
           });
-        } else if (params.type === 'tool_call') {
-          // 도구 호출 시작
-          const toolCall: ToolCall = {
-            id: params.toolCallId || randomUUID(),
-            name: params.toolName || 'unknown',
-            input: params.toolInput || {},
-            status: 'running',
-          };
+          this.updateStatus('error', threadId);
+        }
+        break;
+      }
 
-          this.currentToolCalls.set(threadId, toolCall);
+      case 'thread/tokenUsage/updated': {
+        const threadId = readString(params, 'threadId');
+        const tokenUsage = readRecord(params, 'tokenUsage');
+        if (!threadId || !tokenUsage) {
+          return;
+        }
 
-          this.emit({
-            type: 'tool_start',
-            threadId,
-            agentType: 'codex',
-            tool: toolCall,
-          });
-        } else if (params.type === 'tool_result') {
-          // 도구 결과
-          const toolCall = this.currentToolCalls.get(threadId);
-          if (toolCall) {
-            toolCall.output = params.toolOutput || params.text || '';
-            toolCall.status = 'completed';
+        const total = readRecord(tokenUsage, 'total');
+        const modelContextWindow = readNumber(tokenUsage, 'modelContextWindow');
+        if (!total || modelContextWindow === undefined) {
+          return;
+        }
 
-            const collected = this.collectedToolCalls.get(threadId) || [];
-            collected.push({ ...toolCall });
-            this.collectedToolCalls.set(threadId, collected);
+        const usage = createContextUsage(
+          readNumber(total, 'totalTokens') || 0,
+          modelContextWindow,
+        );
 
-            this.emit({
-              type: 'tool_complete',
-              threadId,
-              agentType: 'codex',
-              tool: { ...toolCall },
-            });
+        const thread = this.threads.get(threadId);
+        if (thread) {
+          thread.contextUsage = usage;
+          persistThread(thread);
+        }
 
-            this.currentToolCalls.delete(threadId);
-          }
+        if (this.status.activeThread === threadId) {
+          this.status.contextUsage = usage;
+          this.emitStatusChange();
+        }
+        break;
+      }
+
+      case 'turn/started': {
+        const threadId = readString(params, 'threadId');
+        const turn = readRecord(params, 'turn');
+        const turnId = turn ? readString(turn, 'id') : undefined;
+        if (!threadId || !turnId) {
+          return;
+        }
+
+        this.markTurnActive(threadId, turnId);
+        break;
+      }
+
+      case 'item/agentMessage/delta': {
+        const threadId = readString(params, 'threadId');
+        const itemId = readString(params, 'itemId');
+        const delta = readString(params, 'delta');
+        if (!threadId || !delta) {
+          return;
+        }
+
+        const current = this.accumulatedText.get(threadId) || '';
+        this.accumulatedText.set(threadId, current + delta);
+        if (itemId) {
+          this.currentMessageIds.set(threadId, itemId);
+        }
+
+        this.emit({
+          type: 'message_delta',
+          threadId,
+          agentType: 'codex',
+          content: delta,
+        });
+        break;
+      }
+
+      case 'item/started': {
+        this.handleItemStarted(params);
+        break;
+      }
+
+      case 'item/completed': {
+        this.handleItemCompleted(params);
+        break;
+      }
+
+      case 'model/rerouted': {
+        const threadId = readString(params, 'threadId');
+        const toModel = readString(params, 'toModel');
+        if (!threadId || !toModel) {
+          return;
+        }
+
+        const thread = this.threads.get(threadId);
+        if (!thread) {
+          return;
+        }
+
+        thread.model = toModel;
+        persistThread(thread);
+
+        if (this.status.activeThread === threadId) {
+          this.status.model = toModel;
+          this.emitStatusChange();
         }
         break;
       }
 
       case 'turn/completed': {
-        const thread = this.threads.get(threadId);
-        const text = this.accumulatedText.get(threadId) || '';
+        this.handleTurnCompleted(params);
+        break;
+      }
 
-        // 컨텍스트 사용량 계산
-        if (params.usage) {
-          const totalTokens = params.usage.total_tokens
-            || ((params.usage.input_tokens || 0) + (params.usage.output_tokens || 0));
-          const model = this.config?.model || '';
-          // Codex 모델별 컨텍스트 윈도우 크기 추정
-          const contextWindow = model.includes('o3') || model.includes('o4') ? 200_000
-            : model.includes('gpt-4') ? 1_047_576
-            : 200_000;
-          const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
-          this.status.contextUsage = { used: totalTokens, total: contextWindow, percentage };
-        }
-
-        const tools = this.collectedToolCalls.get(threadId) || [];
-        const assistantMessage: AgentMessage = {
-          id: randomUUID(),
-          role: 'assistant',
-          content: text,
-          timestamp: Date.now(),
-          toolCalls: tools.length > 0 ? tools : undefined,
-          usage: params.usage ? {
-            inputTokens: params.usage.input_tokens || 0,
-            outputTokens: params.usage.output_tokens || 0,
-          } : undefined,
-        };
-
-        if (thread) {
-          thread.messages.push(assistantMessage);
-          thread.updatedAt = Date.now();
-
-          // 스레드 메타데이터 디스크 저장
-          store.saveThread('codex', {
-            id: thread.id,
-            agentType: 'codex',
-            title: thread.title,
-            lastMessage: assistantMessage.content.slice(0, 100) || undefined,
-            messageCount: thread.messages.length,
-            createdAt: thread.createdAt,
-            updatedAt: thread.updatedAt,
-            cwd: thread.cwd,
-            contextUsage: this.status.contextUsage,
-          });
-        }
-
+      case 'error': {
+        const threadId = this.currentActiveThread() || readString(params, 'threadId') || '';
+        const message = readString(params, 'message') || 'Codex app-server error';
         this.emit({
-          type: 'message_complete',
+          type: 'error',
           threadId,
           agentType: 'codex',
-          message: assistantMessage,
+          error: message,
         });
-
-        this.accumulatedText.delete(threadId);
-        this.collectedToolCalls.delete(threadId);
-        this.updateStatus('idle');
+        this.updateStatus('error', threadId || undefined);
         break;
       }
 
@@ -522,24 +782,680 @@ export class CodexAdapter implements AgentAdapter {
     }
   }
 
+  private handleItemStarted(params: Record<string, unknown>): void {
+    const threadId = readString(params, 'threadId');
+    const item = readRecord(params, 'item');
+    if (!threadId || !item) {
+      return;
+    }
+
+    if (item.type === 'agentMessage') {
+      const itemId = readString(item, 'id');
+      if (itemId) {
+        this.currentMessageIds.set(threadId, itemId);
+      }
+      return;
+    }
+
+    const toolCall = mapThreadItemToToolCall(item);
+    if (!toolCall) {
+      return;
+    }
+
+    this.getOrCreateActiveTools(threadId).set(toolCall.id, toolCall);
+    this.emit({
+      type: 'tool_start',
+      threadId,
+      agentType: 'codex',
+      tool: { ...toolCall },
+    });
+  }
+
+  private handleItemCompleted(params: Record<string, unknown>): void {
+    const threadId = readString(params, 'threadId');
+    const item = readRecord(params, 'item');
+    if (!threadId || !item) {
+      return;
+    }
+
+    if (item.type === 'agentMessage') {
+      const text = readString(item, 'text');
+      if (text !== undefined && !(this.accumulatedText.get(threadId) || '').trim()) {
+        this.accumulatedText.set(threadId, text);
+      }
+      return;
+    }
+
+    const active = this.activeToolCalls.get(threadId);
+    const itemId = readString(item, 'id');
+    if (!active || !itemId) {
+      return;
+    }
+
+    const existing = active.get(itemId);
+    if (!existing) {
+      return;
+    }
+
+    const completed = mapThreadItemToToolCall(item, existing);
+    if (!completed) {
+      return;
+    }
+
+    active.delete(itemId);
+    const collected = this.collectedToolCalls.get(threadId) || new Map<string, ToolCall>();
+    collected.set(itemId, completed);
+    this.collectedToolCalls.set(threadId, collected);
+
+    this.emit({
+      type: 'tool_complete',
+      threadId,
+      agentType: 'codex',
+      tool: { ...completed },
+    });
+  }
+
+  private handleTurnCompleted(params: Record<string, unknown>): void {
+    const threadId = readString(params, 'threadId');
+    const turn = readRecord(params, 'turn');
+    if (!threadId || !turn) {
+      return;
+    }
+
+    const thread = this.threads.get(threadId);
+    const turnId = readString(turn, 'id');
+    const turnStatus = readString(turn, 'status');
+    const error = readRecord(turn, 'error');
+
+    if (turnId) {
+      this.activeTurns.delete(threadId);
+    }
+
+    const text = this.accumulatedText.get(threadId) || '';
+    const tools = Array.from(this.collectedToolCalls.get(threadId)?.values() || []);
+
+    const errorMessage = error ? readString(error, 'message') : undefined;
+    if (turnStatus === 'failed' && errorMessage) {
+      this.emit({
+        type: 'error',
+        threadId,
+        agentType: 'codex',
+        error: errorMessage,
+      });
+    }
+
+    if (thread && (text || tools.length > 0 || turnStatus === 'completed' || turnStatus === 'interrupted')) {
+      const assistantMessage: AgentMessage = {
+        id: this.currentMessageIds.get(threadId) || randomUUID(),
+        role: 'assistant',
+        content: text,
+        timestamp: Date.now(),
+        toolCalls: tools.length > 0 ? tools : undefined,
+        model: thread.model,
+      };
+
+      thread.messages.push(assistantMessage);
+      thread.updatedAt = assistantMessage.timestamp;
+      store.appendMessage(threadId, assistantMessage);
+      persistThread(thread);
+
+      this.emit({
+        type: 'message_complete',
+        threadId,
+        agentType: 'codex',
+        message: assistantMessage,
+      });
+    }
+
+    this.accumulatedText.delete(threadId);
+    this.currentMessageIds.delete(threadId);
+    this.activeToolCalls.delete(threadId);
+    this.collectedToolCalls.delete(threadId);
+    this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
+  }
+
+  private markTurnActive(threadId: string, turnId: string): void {
+    if (this.activeTurns.has(threadId)) {
+      this.activeTurns.delete(threadId);
+    }
+    this.activeTurns.set(threadId, turnId);
+
+    const thread = this.threads.get(threadId);
+    this.status.state = 'running';
+    this.status.activeThread = threadId;
+    this.status.model = thread?.model;
+    this.status.contextUsage = thread?.contextUsage;
+    this.emitStatusChange();
+  }
+
+  private currentActiveThread(): string | undefined {
+    const activeThreads = Array.from(this.activeTurns.keys());
+    return activeThreads[activeThreads.length - 1];
+  }
+
+  private updateThreadFromPayload(
+    thread: ThreadInfo,
+    payload?: CodexThreadPayload,
+    model?: string,
+    config?: AgentConfig,
+  ): void {
+    if (payload?.name) {
+      thread.title = payload.name;
+    } else if (!thread.title && payload?.preview) {
+      thread.title = summarizeTitle(payload.preview);
+    }
+
+    if (payload?.createdAt) {
+      thread.createdAt = payload.createdAt * 1000;
+    }
+    if (payload?.updatedAt) {
+      thread.updatedAt = payload.updatedAt * 1000;
+    }
+    if (payload?.cwd) {
+      thread.cwd = payload.cwd;
+    }
+    if (payload?.path) {
+      thread.path = payload.path;
+    }
+    if (model) {
+      thread.model = model;
+    }
+    if (config) {
+      thread.config = config;
+    }
+
+    persistThread(thread);
+  }
+
+  private getOrCreateActiveTools(threadId: string): Map<string, ToolCall> {
+    const existing = this.activeToolCalls.get(threadId);
+    if (existing) {
+      return existing;
+    }
+
+    const created = new Map<string, ToolCall>();
+    this.activeToolCalls.set(threadId, created);
+    return created;
+  }
+
   private emit(event: AgentEvent): void {
     for (const handler of this.eventHandlers) {
       try {
         handler(event);
-      } catch (err) {
-        console.error('[codex] Event handler error:', err);
+      } catch (error) {
+        console.error('[codex] Event handler error:', error);
       }
     }
   }
 
   private updateStatus(state: AgentStatus['state'], activeThread?: string): void {
-    this.status.state = state;
-    this.status.activeThread = activeThread;
+    this.status = {
+      ...this.status,
+      state,
+      activeThread,
+    };
 
+    if (!activeThread) {
+      this.status.model = undefined;
+      this.status.contextUsage = undefined;
+    }
+
+    this.emitStatusChange();
+  }
+
+  private emitStatusChange(): void {
     this.emit({
       type: 'status_change',
       agentType: 'codex',
-      status: { ...this.status },
+      status: this.getStatus(),
     });
   }
+}
+
+function normalizeCodexConfig(config: AgentConfig): AgentConfig {
+  const normalized = { ...config };
+
+  if (normalized.approvalMode && !isApprovalPolicy(normalized.approvalMode)) {
+    normalized.approvalMode = DEFAULT_CODEX_APPROVAL;
+  }
+
+  if ((normalized as Record<string, unknown>).sandboxMode && !isSandboxMode((normalized as Record<string, unknown>).sandboxMode)) {
+    (normalized as Record<string, unknown>).sandboxMode = DEFAULT_CODEX_SANDBOX;
+  }
+
+  if ((normalized as Record<string, unknown>).serviceTier && !isServiceTier((normalized as Record<string, unknown>).serviceTier)) {
+    (normalized as Record<string, unknown>).serviceTier = DEFAULT_CODEX_SERVICE_TIER;
+  }
+
+  if (normalized.effortLevel && !isReasoningEffort(normalized.effortLevel)) {
+    normalized.effortLevel = DEFAULT_CODEX_REASONING;
+  }
+
+  return normalized;
+}
+
+function buildThreadConfigParams(config: AgentConfig): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+
+  if (config.cwd) {
+    params.cwd = config.cwd;
+  }
+  if (config.model) {
+    params.model = config.model;
+  }
+  if (config.approvalMode && isApprovalPolicy(config.approvalMode)) {
+    params.approvalPolicy = config.approvalMode;
+  }
+
+  const sandboxMode = readConfigString(config, 'sandboxMode');
+  if (sandboxMode && isSandboxMode(sandboxMode)) {
+    params.sandbox = sandboxMode;
+  }
+
+  const serviceTier = readConfigString(config, 'serviceTier');
+  if (serviceTier && isServiceTier(serviceTier)) {
+    params.serviceTier = serviceTier;
+  }
+
+  return params;
+}
+
+function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] {
+  if (models.length === 0) {
+    return CODEX_OPTIONS;
+  }
+
+  const modelOptions = [
+    { value: '', label: 'Default' },
+    ...models.map((model) => ({
+      value: model.model,
+      label: model.displayName,
+    })),
+  ];
+
+  const defaultModel = models.find((model) => model.isDefault)?.model || DEFAULT_CODEX_MODEL;
+  const effortOptions = Array.from(new Map(
+    models.flatMap((model) => model.supportedReasoningEfforts).map((effort) => [effort, effort]),
+  ).values()).map((effort) => ({
+    value: effort,
+    label: effort === 'xhigh' ? 'XHigh' : capitalize(effort),
+  }));
+
+  return [
+    {
+      key: 'model',
+      label: 'Model',
+      type: 'select',
+      options: modelOptions,
+      defaultValue: '',
+      description: 'Codex app-server model/list 기준',
+    },
+    {
+      key: 'effortLevel',
+      label: 'Reasoning',
+      type: 'select',
+      options: effortOptions,
+      defaultValue: models.find((model) => model.model === defaultModel)?.defaultReasoningEffort || DEFAULT_CODEX_REASONING,
+      visibleWhen: effortOptions.length > 0 ? { model: ['', ...models.map((model) => model.model)] } : undefined,
+      description: '선택 모델의 reasoning effort',
+    },
+    {
+      key: 'approvalMode',
+      label: 'Approval',
+      type: 'select',
+      options: [
+        { value: 'on-request', label: 'On Request' },
+        { value: 'untrusted', label: 'Trusted Only' },
+        { value: 'never', label: 'Never Ask' },
+      ],
+      defaultValue: DEFAULT_CODEX_APPROVAL,
+      description: 'Codex ask-for-approval 정책',
+    },
+    {
+      key: 'sandboxMode',
+      label: 'Access',
+      type: 'select',
+      options: [
+        { value: 'workspace-write', label: 'Basic Access' },
+        { value: 'danger-full-access', label: 'Full Access' },
+        { value: 'read-only', label: 'Read Only' },
+      ],
+      defaultValue: DEFAULT_CODEX_SANDBOX,
+      description: 'Codex sandbox 모드',
+    },
+    {
+      key: 'serviceTier',
+      label: 'Speed',
+      type: 'select',
+      options: [
+        { value: '', label: 'Default' },
+        { value: 'fast', label: 'Fast' },
+        { value: 'flex', label: 'Flex' },
+      ],
+      defaultValue: DEFAULT_CODEX_SERVICE_TIER,
+      visibleWhen: {
+        model: ['', 'gpt-5.4'],
+      },
+      description: '공식 app-server service tier',
+    },
+  ];
+}
+
+function buildApprovalToolCall(method: string, params: Record<string, unknown>): ToolCall | null {
+  const itemId = readString(params, 'itemId')
+    || readString(params, 'approvalId')
+    || readString(params, 'callId')
+    || randomUUID();
+
+  switch (method) {
+    case 'item/commandExecution/requestApproval':
+      return {
+        id: itemId,
+        name: 'commandExecution',
+        input: {
+          command: readString(params, 'command') || '',
+          cwd: readString(params, 'cwd') || '',
+          reason: readString(params, 'reason') || '',
+        },
+        status: 'requires_approval',
+      };
+
+    case 'item/fileChange/requestApproval':
+      return {
+        id: itemId,
+        name: 'fileChange',
+        input: {
+          reason: readString(params, 'reason') || '',
+          grantRoot: readString(params, 'grantRoot') || '',
+        },
+        status: 'requires_approval',
+      };
+
+    case 'item/permissions/requestApproval':
+      return {
+        id: itemId,
+        name: 'permissions',
+        input: {
+          reason: readString(params, 'reason') || '',
+          permissions: readRecord(params, 'permissions') || {},
+        },
+        status: 'requires_approval',
+      };
+
+    case 'execCommandApproval':
+      return {
+        id: itemId,
+        name: 'commandExecution',
+        input: {
+          command: readArray(params, 'command') || [],
+          cwd: readString(params, 'cwd') || '',
+          reason: readString(params, 'reason') || '',
+        },
+        status: 'requires_approval',
+      };
+
+    case 'applyPatchApproval':
+      return {
+        id: itemId,
+        name: 'fileChange',
+        input: {
+          reason: readString(params, 'reason') || '',
+          grantRoot: readString(params, 'grantRoot') || '',
+          fileChanges: readRecord(params, 'fileChanges') || {},
+        },
+        status: 'requires_approval',
+      };
+
+    default:
+      return null;
+  }
+}
+
+function buildApprovalResponse(
+  method: string,
+  params: Record<string, unknown>,
+  approved: boolean,
+): Record<string, unknown> {
+  switch (method) {
+    case 'item/commandExecution/requestApproval':
+    case 'execCommandApproval':
+      return { decision: approved ? 'approved' : 'denied' };
+
+    case 'item/fileChange/requestApproval':
+    case 'applyPatchApproval':
+      return { decision: approved ? 'accept' : 'decline' };
+
+    case 'item/permissions/requestApproval':
+      return approved
+        ? { permissions: readRecord(params, 'permissions') || {}, scope: 'turn' }
+        : { permissions: {}, scope: 'turn' };
+
+    default:
+      return {};
+  }
+}
+
+function mapThreadItemToToolCall(item: Record<string, unknown>, existing?: ToolCall): ToolCall | null {
+  const itemId = readString(item, 'id');
+  if (!itemId) {
+    return null;
+  }
+
+  switch (item.type) {
+    case 'commandExecution':
+      return {
+        id: itemId,
+        name: 'commandExecution',
+        input: {
+          command: readString(item, 'command') || '',
+          cwd: readString(item, 'cwd') || '',
+        },
+        output: readString(item, 'aggregatedOutput') || existing?.output,
+        status: mapToolStatus(readString(item, 'status'), existing ? 'completed' : 'running'),
+      };
+
+    case 'fileChange':
+      return {
+        id: itemId,
+        name: 'fileChange',
+        input: {
+          changes: readArray(item, 'changes') || [],
+        },
+        status: mapPatchStatus(readString(item, 'status'), existing ? 'completed' : 'running'),
+      };
+
+    case 'mcpToolCall': {
+      const server = readString(item, 'server') || 'mcp';
+      const tool = readString(item, 'tool') || 'tool';
+      const error = readRecord(item, 'error');
+      return {
+        id: itemId,
+        name: `mcp:${server}/${tool}`,
+        input: readRecord(item, 'arguments') || {},
+        output: error ? JSON.stringify(error) : JSON.stringify(readRecord(item, 'result') || {}),
+        status: mapToolStatus(readString(item, 'status'), existing ? 'completed' : 'running'),
+      };
+    }
+
+    case 'dynamicToolCall':
+      return {
+        id: itemId,
+        name: readString(item, 'tool') || 'dynamicTool',
+        input: readRecord(item, 'arguments') || {},
+        output: JSON.stringify(readArray(item, 'contentItems') || []),
+        status: mapDynamicToolStatus(readString(item, 'status'), existing ? 'completed' : 'running'),
+      };
+
+    case 'webSearch':
+      return {
+        id: itemId,
+        name: 'webSearch',
+        input: {
+          query: readString(item, 'query') || '',
+          action: readRecord(item, 'action') || null,
+        },
+        status: existing ? 'completed' : 'running',
+      };
+
+    default:
+      return existing ? { ...existing } : null;
+  }
+}
+
+function mapToolStatus(status: string | undefined, fallback: ToolCall['status']): ToolCall['status'] {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'failed':
+    case 'denied':
+    case 'aborted':
+      return 'failed';
+    case 'inProgress':
+    case 'pending':
+      return 'running';
+    default:
+      return fallback;
+  }
+}
+
+function mapPatchStatus(status: string | undefined, fallback: ToolCall['status']): ToolCall['status'] {
+  switch (status) {
+    case 'applied':
+    case 'completed':
+      return 'completed';
+    case 'failed':
+    case 'rejected':
+    case 'cancelled':
+      return 'failed';
+    case 'pending':
+      return 'running';
+    default:
+      return fallback;
+  }
+}
+
+function mapDynamicToolStatus(status: string | undefined, fallback: ToolCall['status']): ToolCall['status'] {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'pending':
+    case 'running':
+      return 'running';
+    default:
+      return fallback;
+  }
+}
+
+function toCodexModelDescriptor(model: Record<string, unknown>): CodexModelDescriptor | null {
+  const modelId = readString(model, 'model');
+  const displayName = readString(model, 'displayName');
+  if (!modelId || !displayName) {
+    return null;
+  }
+
+  return {
+    model: modelId,
+    displayName,
+    supportedReasoningEfforts: (readArray(model, 'supportedReasoningEfforts') || [])
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          return entry;
+        }
+        if (entry && typeof entry === 'object' && typeof (entry as { reasoningEffort?: unknown }).reasoningEffort === 'string') {
+          return (entry as { reasoningEffort: string }).reasoningEffort;
+        }
+        return null;
+      })
+      .filter((effort): effort is string => Boolean(effort)),
+    defaultReasoningEffort: readString(model, 'defaultReasoningEffort') || DEFAULT_CODEX_REASONING,
+    isDefault: Boolean(model.isDefault),
+  };
+}
+
+function toThreadSummary(thread: ThreadInfo): ThreadSummary {
+  return {
+    id: thread.id,
+    agentType: 'codex',
+    title: thread.title,
+    lastMessage: thread.messages.length > 0
+      ? thread.messages[thread.messages.length - 1]?.content.slice(0, 100)
+      : undefined,
+    messageCount: thread.messages.length,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    cwd: thread.cwd,
+    model: thread.model,
+    contextUsage: thread.contextUsage,
+    config: thread.config,
+  };
+}
+
+function persistThread(thread: ThreadInfo): void {
+  store.saveThread('codex', toThreadSummary(thread));
+}
+
+function summarizeTitle(content: string): string {
+  return content.trim().slice(0, 50) || 'New conversation';
+}
+
+function createContextUsage(used: number, total: number): ContextUsage {
+  return {
+    used,
+    total,
+    percentage: total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0,
+  };
+}
+
+function readString(obj: Record<string, unknown>, key: string): string | undefined {
+  const value = obj[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readNumber(obj: Record<string, unknown>, key: string): number | undefined {
+  const value = obj[key];
+  return typeof value === 'number' ? value : undefined;
+}
+
+function readRecord(obj: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = obj[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readArray(obj: Record<string, unknown>, key: string): unknown[] | undefined {
+  const value = obj[key];
+  return Array.isArray(value) ? value : undefined;
+}
+
+function readConfigString(config: AgentConfig, key: string): string | undefined {
+  const value = (config as unknown as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function isApprovalPolicy(value: unknown): value is string {
+  return value === 'untrusted' || value === 'on-request' || value === 'never' || value === 'on-failure';
+}
+
+function isSandboxMode(value: unknown): value is string {
+  return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access';
+}
+
+function isServiceTier(value: unknown): value is string {
+  return value === 'fast' || value === 'flex';
+}
+
+function isReasoningEffort(value: unknown): value is string {
+  return value === 'none'
+    || value === 'minimal'
+    || value === 'low'
+    || value === 'medium'
+    || value === 'high'
+    || value === 'xhigh';
+}
+
+function capitalize(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
