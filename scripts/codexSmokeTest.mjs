@@ -10,6 +10,10 @@ function assert(condition, message) {
   }
 }
 
+function readNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function createCodexClient() {
   const proc = spawn('codex', ['app-server'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -137,15 +141,21 @@ async function main() {
       .join('');
     const completed = client.notifications.find((entry) => entry.method === 'turn/completed');
     const tokenUsage = client.notifications.find((entry) => entry.method === 'thread/tokenUsage/updated');
+    const totalTokens = readNumber(tokenUsage?.params?.tokenUsage?.total?.totalTokens);
+    const modelContextWindow = readNumber(tokenUsage?.params?.tokenUsage?.modelContextWindow);
 
     assert(deltas.includes('RCA_CODEX_SMOKE_OK'), `assistant delta가 예상과 다릅니다: ${deltas}`);
     assert(completed, 'turn/completed 알림을 받지 못했습니다.');
     assert(tokenUsage, 'thread/tokenUsage/updated 알림을 받지 못했습니다.');
+    assert(totalTokens !== null, 'thread/tokenUsage/updated.total.totalTokens가 없습니다.');
+    assert(modelContextWindow !== null && modelContextWindow > 0, 'thread/tokenUsage/updated.modelContextWindow가 올바르지 않습니다.');
+    assert(totalTokens <= modelContextWindow, `컨텍스트 사용량이 윈도우를 초과했습니다: ${totalTokens}/${modelContextWindow}`);
 
     console.log(`codex-models: ${modelList.data.map((model) => model.model).join(', ')}`);
     console.log(`codex-speed-mode: ${SPEED_MODE}`);
     console.log(`codex-turn: ${turnStart.turn.id}`);
     console.log(`codex-reply: ${deltas}`);
+    console.log(`codex-context: ${totalTokens}/${modelContextWindow} (${Math.round((totalTokens / modelContextWindow) * 100)}%)`);
   } finally {
     await client.close();
   }

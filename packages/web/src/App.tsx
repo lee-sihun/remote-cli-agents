@@ -22,6 +22,7 @@ import {
   resolveNewChatSettings,
   sameSettings,
 } from './lib/agentSettings';
+import { resolveActiveThreadMeta } from './lib/activeThreadMeta';
 import ConnectScreen from './components/ConnectScreen';
 import ChatView from './components/ChatView';
 import TerminalView from './components/TerminalView';
@@ -212,9 +213,11 @@ export default function App() {
   const activeThreadSummary = store.activeAgent && store.activeThread
     ? store.threads.get(store.activeAgent)?.find((t) => t.id === store.activeThread)
     : undefined;
-  const activeModel = activeThreadSummary?.model || agentStatus?.model;
-  // 컨텍스트 사용량: 실행 중 활성 스레드면 agentStatus, 아니면 스레드 저장값
-  const contextUsage = agentStatus?.contextUsage || activeThreadSummary?.contextUsage;
+  const { model: activeModel, contextUsage } = resolveActiveThreadMeta(
+    store.activeThread,
+    agentStatus,
+    activeThreadSummary,
+  );
 
   // Current thread approvals
   const currentApprovals = store.pendingApprovals.filter(

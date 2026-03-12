@@ -178,6 +178,7 @@ describe('CodexAdapter', () => {
     const proc = createFakeChildProcess();
     childProcessMock.spawn.mockReturnValue(proc);
     const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const events: AgentEvent[] = [];
 
     wireCodexRpc(proc, (request) => {
       requests.push({ method: request.method, params: request.params });
@@ -220,6 +221,9 @@ describe('CodexAdapter', () => {
 
     const { CodexAdapter } = await import('./codex.ts');
     const adapter = new CodexAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
     await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
     adapter.sendMessage('client-thread-new', 'Reply with exactly OK', {
       type: 'codex',
@@ -312,8 +316,37 @@ describe('CodexAdapter', () => {
       expect.objectContaining({
         id: 'client-thread-new',
         remoteThreadId: 'thread-new',
+        contextUsage: {
+          used: 120,
+          total: 1000,
+          percentage: 12,
+        },
       }),
     );
+    expect(storeState.threads.get('codex')).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'client-thread-new',
+        contextUsage: {
+          used: 120,
+          total: 1000,
+          percentage: 12,
+        },
+      }),
+    ]));
+    expect(adapter.getStatus().contextUsage).toBeUndefined();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'status_change',
+        status: expect.objectContaining({
+          activeThread: 'client-thread-new',
+          contextUsage: {
+            used: 120,
+            total: 1000,
+            percentage: 12,
+          },
+        }),
+      }),
+    ]));
     expect(adapter.getStatus().state).toBe('idle');
   });
 
