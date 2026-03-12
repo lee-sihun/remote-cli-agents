@@ -205,9 +205,10 @@ Bridge ──spawn──▶ codex app-server
                   stdin: JSON-RPC 요청
                   stdout: JSON-RPC 응답 + NDJSON 이벤트
 ```
-- Remodex와 동일한 방식으로 `codex app-server` 생성
-- JSON-RPC 프로토콜: `initialize`, `thread/start`, `turn/start` 등
-- 이벤트: `thread.started`, `turn.started`, `item.delta`, `turn.completed`
+- 앱 서버 프로세스에는 TUI 전용 플래그를 직접 전달하지 않고, `thread/start` / `thread/resume` / `turn/start` 요청으로 설정을 전달
+- JSON-RPC 프로토콜: `initialize`, `model/list`, `thread/start`, `thread/resume`, `turn/start`, `turn/interrupt`
+- 주요 이벤트: `thread/started`, `turn/started`, `item/agentMessage/delta`, `item/started`, `item/completed`, `thread/tokenUsage/updated`, `turn/completed`
+- 승인 요청은 server request (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`)로 받아 브라우저 승인 UI와 연결
 
 ### Gemini CLI Adapter (PTY 모드)
 ```

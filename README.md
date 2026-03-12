@@ -16,6 +16,18 @@ CLI 코딩 에이전트(Claude Code, Codex, Gemini CLI)를 웹 브라우저로 �
 - **PWA 지원** — 모바일 홈 화면에 설치 가능, 반응형 디자인
 - **다크/라이트 테마** — 시스템 설정 연동
 
+## 검증 문서
+
+- [docs/claude-code-checklist.md](docs/claude-code-checklist.md)
+- [docs/codex-checklist.md](docs/codex-checklist.md)
+
+## Codex 공식 문서 기준
+
+- [Codex overview](https://developers.openai.com/codex/)
+- [Codex CLI](https://developers.openai.com/codex/cli)
+- [Codex config](https://developers.openai.com/codex/config)
+- [Codex approvals and sandboxing](https://developers.openai.com/codex/security)
+
 ## 아키텍처
 
 ```
@@ -53,7 +65,7 @@ packages/
 - Node.js 18+
 - 사용할 에이전트 CLI 중 하나 이상 설치:
   - [Claude Code](https://docs.anthropic.com/ko/docs/claude-code) (`claude`)
-  - [Codex CLI](https://github.com/openai/codex) (`codex`)
+  - [Codex CLI](https://developers.openai.com/codex/cli) (`codex`)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
 
 ### 설치 및 실행
@@ -64,6 +76,12 @@ npm install
 
 # 개발 서버 시작 (서버 + 웹 클라이언트 동시 실행)
 npm run dev
+
+# Codex 런타임 스모크 테스트
+npm run test:codex
+
+# Codex 브라우저 E2E 테스트 (PinchTab)
+npm run test:pinchtab:codex
 ```
 
 브라우저에서 `http://localhost:9471` 접속 후 표시된 QR 코드를 스캔하거나 URL을 직접 입력해 연결합니다.
