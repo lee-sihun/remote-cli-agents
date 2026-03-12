@@ -53,6 +53,9 @@ const storeMock = vi.hoisted(() => ({
       storeState.threads.set(agentType, threads);
     }
   }),
+  saveMessages: vi.fn((threadId: string, messages: AgentMessage[]) => {
+    storeState.messages.set(threadId, [...messages]);
+  }),
   saveThread: vi.fn((agentType: string, thread: ThreadSummary) => {
     const threads = [...(storeState.threads.get(agentType) || [])];
     const index = threads.findIndex((item) => item.id === thread.id);
@@ -295,14 +298,13 @@ describe('CodexAdapter', () => {
 
     await flushStreamEvents();
 
-    expect(storeMock.appendMessage).toHaveBeenCalledWith(
-      'client-thread-new',
+    expect(storeState.messages.get('client-thread-new')).toEqual(expect.arrayContaining([
       expect.objectContaining({
         role: 'assistant',
         content: 'OK',
         model: 'gpt-5.4',
       }),
-    );
+    ]));
     expect(storeMock.saveThread).toHaveBeenCalledWith(
       'codex',
       expect.objectContaining({
@@ -311,6 +313,150 @@ describe('CodexAdapter', () => {
       }),
     );
     expect(adapter.getStatus().state).toBe('idle');
+  });
+
+  it('emits Codex assistant text and tool updates in chronological order', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+
+    wireCodexRpc(proc, (request) => {
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-chronology',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-chronology',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    const events: AgentEvent[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-chronology', 'run', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-chronology',
+        turn: {
+          id: 'turn-chronology',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/agentMessage/delta',
+      params: {
+        threadId: 'thread-chronology',
+        turnId: 'turn-chronology',
+        itemId: 'msg-before-tool',
+        delta: '결과 보고',
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-chronology',
+        item: {
+          id: 'tool-chronology',
+          type: 'commandExecution',
+          command: 'npm test',
+          cwd: 'C:/workspace',
+          status: 'inProgress',
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-chronology',
+        item: {
+          id: 'tool-chronology',
+          type: 'commandExecution',
+          command: 'npm test',
+          cwd: 'C:/workspace',
+          aggregatedOutput: 'ok',
+          status: 'completed',
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/agentMessage/delta',
+      params: {
+        threadId: 'thread-chronology',
+        turnId: 'turn-chronology',
+        itemId: 'msg-after-tool',
+        delta: '최종 요약',
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-chronology',
+        turn: {
+          id: 'turn-chronology',
+          status: 'completed',
+          error: null,
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed).toHaveLength(4);
+    expect(completed[0]?.message.content).toBe('결과 보고');
+    expect(completed[1]?.message.toolCalls?.[0]).toMatchObject({
+      id: 'tool-chronology',
+      status: 'running',
+    });
+    expect(completed[2]?.message.toolCalls?.[0]).toMatchObject({
+      id: 'tool-chronology',
+      status: 'completed',
+      output: 'ok',
+    });
+    expect(completed[3]?.message.content).toBe('최종 요약');
+
+    expect(storeState.messages.get('thread-chronology')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: 'run' }),
+      expect.objectContaining({ id: 'msg-before-tool', role: 'assistant', content: '결과 보고' }),
+      expect.objectContaining({
+        id: 'tool-chronology',
+        role: 'assistant',
+        toolCalls: [expect.objectContaining({ status: 'completed' })],
+      }),
+      expect.objectContaining({ id: 'msg-after-tool', role: 'assistant', content: '최종 요약' }),
+    ]));
   });
 
   it('resumes stored threads before sending and uses the active turn id for interrupts', async () => {
@@ -415,6 +561,81 @@ describe('CodexAdapter', () => {
       threadId: 'thread-resume',
       turnId: 'turn-resume',
     });
+  });
+
+  it('reuses the stored thread config when no new overrides are provided', async () => {
+    storeState.threads.set('codex', [{
+      id: 'thread-restored-config',
+      agentType: 'codex',
+      title: 'Stored thread',
+      messageCount: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      cwd: 'C:/saved-workspace',
+      remoteThreadId: 'thread-restored-config',
+      config: {
+        type: 'codex',
+        model: 'gpt-5.4',
+        effortLevel: 'high',
+        approvalMode: 'never',
+        sandboxMode: 'danger-full-access',
+      },
+    }]);
+
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+
+    wireCodexRpc(proc, (request) => {
+      requests.push({ method: request.method, params: request.params });
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/resume') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-restored-config',
+              createdAt: 1,
+              updatedAt: 2,
+              cwd: 'C:/saved-workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-restored-config',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace', approvalMode: 'on-request' });
+    adapter.sendMessage('thread-restored-config', 'continue');
+    await flushStreamEvents();
+
+    expect(requests.find((request) => request.method === 'thread/resume')?.params).toEqual(expect.objectContaining({
+      threadId: 'thread-restored-config',
+      cwd: 'C:/saved-workspace',
+      model: 'gpt-5.4',
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+      persistExtendedHistory: false,
+    }));
   });
 
   it('starts a fresh Codex thread for legacy stored threads without a remote thread id', async () => {

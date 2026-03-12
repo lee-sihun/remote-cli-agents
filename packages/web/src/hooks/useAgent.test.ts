@@ -305,6 +305,37 @@ describe('useAgentStore', () => {
     expect(useAgentStore.getState().pendingApprovals[0]?.id).toBe('tool-1');
   });
 
+  it('keeps pending approvals when a text-only assistant message is completed', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      pendingApprovals: [{
+        ...baseToolCall,
+        status: 'requires_approval',
+        threadId: 'thread-1',
+        agentType: 'claude',
+      }],
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'message_complete',
+        threadId: 'thread-1',
+        agentType: 'claude',
+        message: {
+          id: 'assistant-keep-approval',
+          role: 'assistant',
+          content: 'waiting on approval',
+          timestamp: 4,
+        },
+      },
+    });
+
+    expect(useAgentStore.getState().pendingApprovals).toHaveLength(1);
+    expect(useAgentStore.getState().pendingApprovals[0]?.id).toBe('tool-1');
+  });
+
   it('clears stale running state on reconnect without message_complete', async () => {
     const { useAgentStore } = await import('./useAgent.ts');
 

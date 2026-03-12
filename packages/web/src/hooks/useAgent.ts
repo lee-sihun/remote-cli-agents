@@ -91,6 +91,55 @@ function summarizeThreadContent(content: string, maxLength: number): string {
   return content.trim().slice(0, maxLength) || 'New conversation';
 }
 
+function reconcileActiveToolCalls(
+  activeToolCalls: Map<string, ToolCall[]>,
+  threadId: string,
+  message: AgentMessage,
+): Map<string, ToolCall[]> {
+  if (!message.toolCalls || message.toolCalls.length === 0) {
+    return activeToolCalls;
+  }
+
+  const next = new Map(activeToolCalls);
+  const existing = next.get(threadId) || [];
+  if (existing.length === 0) {
+    return next;
+  }
+
+  const updates = new Map(message.toolCalls.map((tool) => [tool.id, tool]));
+  const remaining = existing
+    .map((tool) => updates.get(tool.id) || tool)
+    .filter((tool) => tool.status === 'pending' || tool.status === 'running' || tool.status === 'requires_approval');
+
+  if (remaining.length > 0) {
+    next.set(threadId, remaining);
+  } else {
+    next.delete(threadId);
+  }
+
+  return next;
+}
+
+function reconcilePendingApprovals(
+  pendingApprovals: (ToolCall & { threadId: string; agentType: AgentType })[],
+  threadId: string,
+  message: AgentMessage,
+): (ToolCall & { threadId: string; agentType: AgentType })[] {
+  const resolvedToolIds = new Set(
+    (message.toolCalls || [])
+      .filter((tool) => tool.status !== 'requires_approval')
+      .map((tool) => tool.id),
+  );
+
+  if (resolvedToolIds.size === 0) {
+    return pendingApprovals;
+  }
+
+  return pendingApprovals.filter(
+    (approval) => approval.threadId !== threadId || !resolvedToolIds.has(approval.id),
+  );
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   connectionStatus: 'disconnected',
 
@@ -374,7 +423,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               updated[threadIdx] = {
                 ...updated[threadIdx],
                 lastMessage:
-                  event.message.content.slice(0, 100) || undefined,
+                  event.message.content.slice(0, 100)
+                  || updated[threadIdx].lastMessage,
                 messageCount: (messages.get(event.threadId) || []).length,
                 updatedAt: Date.now(),
               };
@@ -394,12 +444,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               threads.set(event.agentType, agentThreads);
             }
 
-            // activeToolCalls 정리
-            const atc = new Map(state.activeToolCalls);
-            atc.delete(event.threadId);
+            const atc = reconcileActiveToolCalls(
+              state.activeToolCalls,
+              event.threadId,
+              event.message,
+            );
 
-            const pendingApprovals = state.pendingApprovals.filter(
-              (approval) => approval.threadId !== event.threadId,
+            const pendingApprovals = reconcilePendingApprovals(
+              state.pendingApprovals,
+              event.threadId,
+              event.message,
             );
 
             set({
@@ -413,10 +467,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           }
 
           case 'tool_start': {
-            // 스트리밍 중이면 activeToolCalls에 저장
             const atc = new Map(state.activeToolCalls);
             const existing = atc.get(event.threadId) || [];
-            atc.set(event.threadId, [...existing, event.tool]);
+            const nextTools = [...existing];
+            const toolIndex = nextTools.findIndex((tool) => tool.id === event.tool.id);
+            if (toolIndex >= 0) {
+              nextTools[toolIndex] = event.tool;
+            } else {
+              nextTools.push(event.tool);
+            }
+            atc.set(event.threadId, nextTools);
             set({ activeToolCalls: atc });
             break;
           }

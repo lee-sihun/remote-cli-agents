@@ -134,7 +134,6 @@ export class CodexAdapter implements AgentAdapter {
   private accumulatedText = new Map<string, string>();
   private currentMessageIds = new Map<string, string>();
   private activeToolCalls = new Map<string, Map<string, ToolCall>>();
-  private collectedToolCalls = new Map<string, Map<string, ToolCall>>();
   private availableModels: CodexModelDescriptor[] = [];
 
   async start(config: AgentConfig): Promise<void> {
@@ -162,7 +161,6 @@ export class CodexAdapter implements AgentAdapter {
     this.accumulatedText.clear();
     this.currentMessageIds.clear();
     this.activeToolCalls.clear();
-    this.collectedToolCalls.clear();
     this.threads.clear();
     this.availableModels = [];
     this.updateStatus('idle');
@@ -183,11 +181,8 @@ export class CodexAdapter implements AgentAdapter {
 
   sendMessage(threadId: string | undefined, message: string, config?: AgentConfig): void {
     const tid = threadId || randomUUID();
-    const runConfig = normalizeCodexConfig({
-      ...this.config,
-      ...config,
-      type: 'codex',
-    });
+    const existingThread = this.threads.get(tid);
+    const runConfig = this.resolveThreadConfig(existingThread, config);
 
     console.log(`[codex] Queueing turn for client thread ${tid} ${formatCodexLog({
       model: runConfig.model || '',
@@ -239,6 +234,7 @@ export class CodexAdapter implements AgentAdapter {
     const tool = active?.get(toolCallId);
     if (tool) {
       tool.status = approved ? 'running' : 'failed';
+      this.upsertToolMessage(threadId, { ...tool });
     }
 
     this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
@@ -257,15 +253,13 @@ export class CodexAdapter implements AgentAdapter {
 
   getStreamingState(threadId: string): ThreadStreamingState | null {
     const content = this.accumulatedText.get(threadId);
-    const toolCalls = Array.from(this.activeToolCalls.get(threadId)?.values() || []).map((tool) => ({ ...tool }));
-
-    if (content === undefined && toolCalls.length === 0) {
+    if (content === undefined) {
       return null;
     }
 
     return {
       content: content || '',
-      toolCalls,
+      toolCalls: [],
     };
   }
 
@@ -298,7 +292,6 @@ export class CodexAdapter implements AgentAdapter {
     this.accumulatedText.delete(threadId);
     this.currentMessageIds.delete(threadId);
     this.activeToolCalls.delete(threadId);
-    this.collectedToolCalls.delete(threadId);
     this.threads.delete(threadId);
     store.deleteThread('codex', threadId);
 
@@ -405,9 +398,8 @@ export class CodexAdapter implements AgentAdapter {
     persistThread(thread);
 
     this.accumulatedText.set(threadId, '');
-    this.currentMessageIds.set(threadId, randomUUID());
+    this.currentMessageIds.delete(threadId);
     this.activeToolCalls.delete(threadId);
-    this.collectedToolCalls.set(threadId, new Map());
 
     this.emit({
       type: 'message_start',
@@ -440,7 +432,6 @@ export class CodexAdapter implements AgentAdapter {
       this.accumulatedText.delete(threadId);
       this.currentMessageIds.delete(threadId);
       this.activeToolCalls.delete(threadId);
-      this.collectedToolCalls.delete(threadId);
       this.emit({
         type: 'error',
         threadId,
@@ -475,6 +466,21 @@ export class CodexAdapter implements AgentAdapter {
     };
     this.threads.set(threadId, thread);
     return thread;
+  }
+
+  private resolveThreadConfig(existingThread?: ThreadInfo, overrideConfig?: AgentConfig): AgentConfig {
+    const baseConfig = {
+      ...(this.config || { type: 'codex' as const }),
+      ...(existingThread?.config || {}),
+      ...(overrideConfig || {}),
+    };
+
+    return normalizeCodexConfig({
+      ...baseConfig,
+      type: 'codex',
+      cwd: existingThread?.cwd || overrideConfig?.cwd || baseConfig.cwd || this.config?.cwd,
+      env: baseConfig.env ? { ...baseConfig.env } : undefined,
+    });
   }
 
   private async ensureThreadLoaded(thread: ThreadInfo, config: AgentConfig, existingThread: boolean): Promise<void> {
@@ -629,6 +635,8 @@ export class CodexAdapter implements AgentAdapter {
       params,
     });
 
+    this.flushAssistantText(threadId);
+    this.upsertToolMessage(threadId, { ...toolCall });
     this.updateStatus('waiting_approval', threadId);
     this.emit({
       type: 'approval_required',
@@ -829,6 +837,10 @@ export class CodexAdapter implements AgentAdapter {
 
     if (item.type === 'agentMessage') {
       const itemId = readString(item, 'id');
+      const currentMessageId = this.currentMessageIds.get(threadId);
+      if (itemId && currentMessageId && currentMessageId !== itemId) {
+        this.flushAssistantText(threadId);
+      }
       if (itemId) {
         this.currentMessageIds.set(threadId, itemId);
       }
@@ -840,13 +852,9 @@ export class CodexAdapter implements AgentAdapter {
       return;
     }
 
+    this.flushAssistantText(threadId);
     this.getOrCreateActiveTools(threadId).set(toolCall.id, toolCall);
-    this.emit({
-      type: 'tool_start',
-      threadId,
-      agentType: 'codex',
-      tool: { ...toolCall },
-    });
+    this.upsertToolMessage(threadId, { ...toolCall });
   }
 
   private handleItemCompleted(params: Record<string, unknown>): void {
@@ -858,10 +866,15 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     if (item.type === 'agentMessage') {
+      const itemId = readString(item, 'id');
       const text = readString(item, 'text');
+      if (itemId) {
+        this.currentMessageIds.set(threadId, itemId);
+      }
       if (text !== undefined && !(this.accumulatedText.get(threadId) || '').trim()) {
         this.accumulatedText.set(threadId, text);
       }
+      this.flushAssistantText(threadId);
       return;
     }
 
@@ -882,16 +895,7 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     active.delete(itemId);
-    const collected = this.collectedToolCalls.get(threadId) || new Map<string, ToolCall>();
-    collected.set(itemId, completed);
-    this.collectedToolCalls.set(threadId, collected);
-
-    this.emit({
-      type: 'tool_complete',
-      threadId,
-      agentType: 'codex',
-      tool: { ...completed },
-    });
+    this.upsertToolMessage(threadId, { ...completed });
   }
 
   private handleTurnCompleted(params: Record<string, unknown>): void {
@@ -911,9 +915,6 @@ export class CodexAdapter implements AgentAdapter {
       this.activeTurns.delete(threadId);
     }
 
-    const text = this.accumulatedText.get(threadId) || '';
-    const tools = Array.from(this.collectedToolCalls.get(threadId)?.values() || []);
-
     const errorMessage = error ? readString(error, 'message') : undefined;
     if (turnStatus === 'failed' && errorMessage) {
       this.emit({
@@ -924,34 +925,79 @@ export class CodexAdapter implements AgentAdapter {
       });
     }
 
-    if (thread && (text || tools.length > 0 || turnStatus === 'completed' || turnStatus === 'interrupted')) {
-      const assistantMessage: AgentMessage = {
-        id: this.currentMessageIds.get(threadId) || randomUUID(),
-        role: 'assistant',
-        content: text,
-        timestamp: Date.now(),
-        toolCalls: tools.length > 0 ? tools : undefined,
-        model: thread.model,
-      };
-
-      thread.messages.push(assistantMessage);
-      thread.updatedAt = assistantMessage.timestamp;
-      store.appendMessage(threadId, assistantMessage);
-      persistThread(thread);
-
-      this.emit({
-        type: 'message_complete',
-        threadId,
-        agentType: 'codex',
-        message: assistantMessage,
-      });
+    if (thread) {
+      this.flushAssistantText(threadId);
     }
 
     this.accumulatedText.delete(threadId);
     this.currentMessageIds.delete(threadId);
     this.activeToolCalls.delete(threadId);
-    this.collectedToolCalls.delete(threadId);
     this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
+  }
+
+  private flushAssistantText(threadId: string): void {
+    const content = this.accumulatedText.get(threadId) || '';
+    const trimmed = content.trim();
+    const thread = this.threads.get(threadId);
+
+    this.accumulatedText.set(threadId, '');
+
+    if (!thread || !trimmed) {
+      this.currentMessageIds.delete(threadId);
+      return;
+    }
+
+    const message: AgentMessage = {
+      id: this.currentMessageIds.get(threadId) || randomUUID(),
+      role: 'assistant',
+      content,
+      timestamp: Date.now(),
+      model: thread.model,
+    };
+
+    this.currentMessageIds.delete(threadId);
+    this.upsertAssistantMessage(threadId, message);
+  }
+
+  private upsertToolMessage(threadId: string, tool: ToolCall): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      return;
+    }
+
+    const existing = thread.messages.find((message) => message.id === tool.id);
+    this.upsertAssistantMessage(threadId, {
+      id: tool.id,
+      role: 'assistant',
+      content: '',
+      timestamp: existing?.timestamp || Date.now(),
+      toolCalls: [{ ...tool }],
+      model: thread.model,
+    });
+  }
+
+  private upsertAssistantMessage(threadId: string, message: AgentMessage): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      return;
+    }
+
+    const existingIndex = thread.messages.findIndex((entry) => entry.id === message.id);
+    if (existingIndex >= 0) {
+      thread.messages[existingIndex] = message;
+    } else {
+      thread.messages.push(message);
+    }
+
+    thread.updatedAt = message.timestamp;
+    store.saveMessages(threadId, thread.messages);
+    persistThread(thread);
+    this.emit({
+      type: 'message_complete',
+      threadId,
+      agentType: 'codex',
+      message,
+    });
   }
 
   private markTurnActive(threadId: string, turnId: string): void {
@@ -1162,7 +1208,7 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
       type: 'select',
       options: [
         { value: 'on-request', label: 'On Request' },
-        { value: 'untrusted', label: 'Trusted Only' },
+        { value: 'untrusted', label: 'Untrusted' },
         { value: 'never', label: 'Never Ask' },
       ],
       defaultValue: DEFAULT_CODEX_APPROVAL,
@@ -1173,7 +1219,7 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
       label: 'Access',
       type: 'select',
       options: [
-        { value: 'workspace-write', label: 'Basic Access' },
+        { value: 'workspace-write', label: 'Workspace Write' },
         { value: 'danger-full-access', label: 'Full Access' },
         { value: 'read-only', label: 'Read Only' },
       ],
