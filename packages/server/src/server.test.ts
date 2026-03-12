@@ -151,7 +151,7 @@ describe('server helpers', () => {
         key: 'sandboxMode',
         label: 'Access',
         type: 'select',
-        options: [{ value: 'workspace-write', label: 'Basic Access' }],
+        options: [{ value: 'workspace-write', label: 'Workspace Write' }],
       }],
     });
     const adapters = new Map<AgentType, FakeAdapter>([['codex', adapter]]);
@@ -174,7 +174,7 @@ describe('server helpers', () => {
           key: 'sandboxMode',
           label: 'Access',
           type: 'select',
-          options: [{ value: 'workspace-write', label: 'Basic Access' }],
+          options: [{ value: 'workspace-write', label: 'Workspace Write' }],
         }],
       }),
     ]));

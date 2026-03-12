@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 const RUN_TIMEOUT_MS = 60_000;
+const SPEED_MODE = process.env.RCA_CODEX_SPEED_MODE === 'fast' ? 'fast' : 'standard';
 
 function assert(condition, message) {
   if (!condition) {
@@ -99,6 +100,7 @@ async function main() {
       approvalPolicy: 'on-request',
       sandbox: 'workspace-write',
       model: 'gpt-5.4',
+      ...(SPEED_MODE === 'fast' ? { serviceTier: 'fast' } : {}),
       experimentalRawEvents: false,
       persistExtendedHistory: false,
     });
@@ -141,6 +143,7 @@ async function main() {
     assert(tokenUsage, 'thread/tokenUsage/updated 알림을 받지 못했습니다.');
 
     console.log(`codex-models: ${modelList.data.map((model) => model.model).join(', ')}`);
+    console.log(`codex-speed-mode: ${SPEED_MODE}`);
     console.log(`codex-turn: ${turnStart.turn.id}`);
     console.log(`codex-reply: ${deltas}`);
   } finally {

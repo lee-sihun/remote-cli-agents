@@ -675,7 +675,7 @@ export default function App() {
                 isRunning={isRunning}
                 disabled={!store.activeAgent || ws.status !== 'connected'}
                 inputOptions={currentAgentOptions.filter((o) => o.key === 'model' || o.key === 'effortLevel')}
-                footerOptions={currentAgentOptions.filter((o) => o.key === 'permissionMode' || o.key === 'approvalMode' || o.key === 'sandboxMode' || o.key === 'serviceTier')}
+                footerOptions={currentAgentOptions.filter((o) => o.key === 'permissionMode' || o.key === 'approvalMode' || o.key === 'sandboxMode' || o.key === 'speedMode')}
                 settingValues={currentAgentSettings}
                 onSettingChange={handleAgentSettingChange}
                 contextUsage={contextUsage}

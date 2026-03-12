@@ -30,8 +30,8 @@
 - [x] 모델 선택값이 실제 `turn/start` / `thread/start`에 반영
 - [x] Approval 옵션이 `on-request`, `untrusted`, `never` 정책과 일치
 - [x] Access 옵션이 `workspace-write`, `danger-full-access`, `read-only`와 일치
-- [x] `serviceTier` 옵션(`fast`, `flex`)을 분리 노출
-- [x] Fast 관련 옵션은 `gpt-5.4` 기본 흐름 기준으로만 노출
+- [x] `gpt-5.4` 전용 Speed 옵션(`Standard`, `Fast`)을 분리 노출
+- [x] Fast 관련 옵션은 `gpt-5.4` 선택 시에만 노출
 - [x] Reasoning 옵션은 app-server `supportedReasoningEfforts` 기준으로 구성
 
 ## 3. 스레드 라이프사이클
@@ -72,11 +72,11 @@
 - [x] approval request/response 검증
 - [x] 로컬 Codex CLI 실환경 스모크 테스트 스크립트 추가
 - [x] PinchTab 기반 Codex 브라우저 E2E 시나리오 추가
-  - 범위: 에이전트 전환, 동적 모델 목록, `serviceTier` 표시 조건, 리로드 후 Codex UI 복원
+  - 범위: 에이전트 전환, 동적 모델 목록, `gpt-5.4` Fast 표시 조건, 리로드 후 Codex UI 복원
   - 실응답/토큰 스트림은 `npm run test:codex`가 담당
 
 ## 8. 추가 확인 필요
 
-- [ ] `serviceTier=fast`가 계정/모델 조합별로 실제 허용되는지 장기 검증
+- [ ] `gpt-5.4` Fast가 계정/모델 조합별로 실제 허용되는지 장기 검증
 - [ ] permission request 세부 응답(`scope=session`, 정책 amendment) UI 확장
 - [ ] request user input / elicitation 류 server request UI 대응

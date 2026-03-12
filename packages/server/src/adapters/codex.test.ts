@@ -169,7 +169,7 @@ describe('CodexAdapter', () => {
           ]),
         }),
         expect.objectContaining({ key: 'sandboxMode' }),
-        expect.objectContaining({ key: 'serviceTier' }),
+        expect.objectContaining({ key: 'speedMode' }),
       ]),
     );
   });
@@ -227,6 +227,7 @@ describe('CodexAdapter', () => {
       model: 'gpt-5.4',
       approvalMode: 'on-request',
       sandboxMode: 'workspace-write',
+      speedMode: 'fast',
     });
 
     await flushStreamEvents();
@@ -239,6 +240,7 @@ describe('CodexAdapter', () => {
       model: 'gpt-5.4',
       approvalPolicy: 'on-request',
       sandbox: 'workspace-write',
+      serviceTier: 'fast',
       experimentalRawEvents: false,
       persistExtendedHistory: false,
     }));
@@ -579,6 +581,7 @@ describe('CodexAdapter', () => {
         effortLevel: 'high',
         approvalMode: 'never',
         sandboxMode: 'danger-full-access',
+        speedMode: 'fast',
       },
     }]);
 
@@ -634,6 +637,7 @@ describe('CodexAdapter', () => {
       model: 'gpt-5.4',
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
+      serviceTier: 'fast',
       persistExtendedHistory: false,
     }));
   });

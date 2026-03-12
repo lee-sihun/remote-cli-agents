@@ -9,7 +9,6 @@ const WAIT_INTERVAL_MS = 1_000;
 const CHAT_SELECTOR = '[data-testid="chat-view"]';
 const AGENT_SELECTOR = '[data-testid="agent-selector-button"]';
 const MODEL_SELECTOR = '[data-testid="input-option-model"]';
-const SERVICE_TIER_SELECTOR = '[data-testid="footer-option-serviceTier"]';
 let appPort = 9570;
 let appUrl = `http://127.0.0.1:${appPort}/`;
 let pinchtabPort = 9868;
@@ -143,18 +142,6 @@ function snap(selector) {
     args.push('-s', selector);
   }
   return runPinchtab(args);
-}
-
-function snapOrNull(selector) {
-  try {
-    return snap(selector);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('selector: selector') && message.includes('not found')) {
-      return null;
-    }
-    throw error;
-  }
 }
 
 function extractRefs(snapshot, role, text) {
@@ -308,11 +295,52 @@ function pickNonFastModel(snapshot) {
   return candidates[0] || null;
 }
 
-async function assertDefaultFooterHidden() {
+async function assertSpeedFooterHidden() {
   await waitFor(() => {
     const current = snap();
-    return current.includes('button "Default"') ? null : 'hidden';
-  }, '비기본 모델에서 serviceTier 옵션이 숨겨지지 않았습니다.');
+    return current.includes('button "Standard"') || current.includes('button "Fast"') ? null : 'hidden';
+  }, '비대상 모델에서 Speed 옵션이 숨겨지지 않았습니다.');
+}
+
+async function waitForVisibleSpeedButton(expectedLabel) {
+  return waitFor(() => {
+    const current = snap();
+    const standardRef = extractRef(current, 'button', 'Standard');
+    if (standardRef) {
+      if (expectedLabel && expectedLabel !== 'Standard') {
+        return null;
+      }
+      return { current, label: 'Standard', ref: standardRef };
+    }
+
+    const fastRef = extractRef(current, 'button', 'Fast');
+    if (fastRef) {
+      if (expectedLabel && expectedLabel !== 'Fast') {
+        return null;
+      }
+      return { current, label: 'Fast', ref: fastRef };
+    }
+
+    return null;
+  }, expectedLabel ? `Speed 옵션이 ${expectedLabel} 상태로 보이지 않습니다.` : 'Speed 선택 버튼을 찾지 못했습니다.');
+}
+
+async function ensureSpeed(targetLabel) {
+  const speedButton = await waitForVisibleSpeedButton();
+  if (speedButton.label === targetLabel) {
+    return;
+  }
+
+  click(speedButton.ref);
+
+  const optionRef = await waitFor(() => {
+    const current = snap();
+    const refs = extractRefs(current, 'button', targetLabel);
+    return refs.find((ref) => ref !== speedButton.ref) || refs[refs.length - 1] || null;
+  }, `Speed 옵션을 찾지 못했습니다: ${targetLabel}`);
+  click(optionRef);
+
+  await waitForVisibleSpeedButton(targetLabel);
 }
 
 async function getFreePort() {
@@ -340,20 +368,27 @@ async function getFreePort() {
 
 async function assertCodexOptions() {
   await assertSnapshotContains('button "On Request"');
-  await assertSnapshotContains('button "Basic Access"');
-  await waitFor(() => {
-    const current = snapOrNull(SERVICE_TIER_SELECTOR);
-    if (!current) {
-      return null;
-    }
-    return current.includes('button "Default"') ? current : null;
-  }, 'serviceTier 옵션이 보이지 않습니다.');
+  await assertSnapshotContains('button "Workspace Write"');
+  await selectModel('gpt-5.4');
+  await waitForVisibleSpeedButton();
+
+  await ensureSpeed('Fast');
 
   await selectModel();
-  await assertDefaultFooterHidden();
+  await assertSpeedFooterHidden();
 
   await selectModel('gpt-5.4');
-  await assertSnapshotContains('button "Default"');
+  await waitForVisibleSpeedButton('Fast');
+}
+
+async function assertCodexOptionsAfterReload() {
+  await assertSnapshotContains('button "On Request"');
+  await assertSnapshotContains('button "Workspace Write"');
+  await waitFor(() => {
+    const current = snap(MODEL_SELECTOR);
+    return current.includes('button "gpt-5.4"') ? current : null;
+  }, '리로드 후 gpt-5.4 모델이 유지되지 않았습니다.');
+  await waitForVisibleSpeedButton('Fast');
 }
 
 async function main() {
@@ -382,10 +417,10 @@ async function main() {
     runPinchtab(['nav', appUrl], { timeout: 60_000 });
     await ensureCodexSelected();
     await openNewChat();
-    await assertCodexOptions();
+    await assertCodexOptionsAfterReload();
 
-    console.log(`pinchtab-codex-options: ok (gpt-5.4 -> hidden fast on non-5.4)`);
-    console.log(`pinchtab-codex-reload: ok`);
+    console.log('pinchtab-codex-options: ok (gpt-5.4 standard/fast + hidden on non-5.4)');
+    console.log('pinchtab-codex-reload: ok (fast persisted across model switch and reload)');
     failed = false;
   } finally {
     await stopProcess(appServer);

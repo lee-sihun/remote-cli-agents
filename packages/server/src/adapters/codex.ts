@@ -110,7 +110,7 @@ const DEFAULT_CODEX_MODEL = 'gpt-5.4';
 const DEFAULT_CODEX_REASONING = 'medium';
 const DEFAULT_CODEX_SANDBOX = 'workspace-write';
 const DEFAULT_CODEX_APPROVAL = 'on-request';
-const DEFAULT_CODEX_SERVICE_TIER = '';
+const DEFAULT_CODEX_SPEED = 'standard';
 
 export class CodexAdapter implements AgentAdapter {
   readonly name = 'Codex';
@@ -188,7 +188,7 @@ export class CodexAdapter implements AgentAdapter {
       model: runConfig.model || '',
       approvalMode: runConfig.approvalMode || '',
       sandboxMode: readConfigString(runConfig, 'sandboxMode') || '',
-      serviceTier: readConfigString(runConfig, 'serviceTier') || '',
+      speedMode: readConfigString(runConfig, 'speedMode') || '',
       cwd: runConfig.cwd || '',
     })}`);
     void this.runTurn(tid, message, runConfig);
@@ -1126,8 +1126,8 @@ function normalizeCodexConfig(config: AgentConfig): AgentConfig {
     (normalized as Record<string, unknown>).sandboxMode = DEFAULT_CODEX_SANDBOX;
   }
 
-  if ((normalized as Record<string, unknown>).serviceTier && !isServiceTier((normalized as Record<string, unknown>).serviceTier)) {
-    (normalized as Record<string, unknown>).serviceTier = DEFAULT_CODEX_SERVICE_TIER;
+  if ((normalized as Record<string, unknown>).speedMode && !isSpeedMode((normalized as Record<string, unknown>).speedMode)) {
+    (normalized as Record<string, unknown>).speedMode = DEFAULT_CODEX_SPEED;
   }
 
   if (normalized.effortLevel && !isReasoningEffort(normalized.effortLevel)) {
@@ -1155,9 +1155,9 @@ function buildThreadConfigParams(config: AgentConfig): Record<string, unknown> {
     params.sandbox = sandboxMode;
   }
 
-  const serviceTier = readConfigString(config, 'serviceTier');
-  if (serviceTier && isServiceTier(serviceTier)) {
-    params.serviceTier = serviceTier;
+  const speedMode = readConfigString(config, 'speedMode');
+  if (config.model === 'gpt-5.4' && speedMode === 'fast') {
+    params.serviceTier = 'fast';
   }
 
   return params;
@@ -1227,19 +1227,18 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
       description: 'Codex sandbox 모드',
     },
     {
-      key: 'serviceTier',
+      key: 'speedMode',
       label: 'Speed',
       type: 'select',
       options: [
-        { value: '', label: 'Default' },
+        { value: 'standard', label: 'Standard' },
         { value: 'fast', label: 'Fast' },
-        { value: 'flex', label: 'Flex' },
       ],
-      defaultValue: DEFAULT_CODEX_SERVICE_TIER,
+      defaultValue: DEFAULT_CODEX_SPEED,
       visibleWhen: {
-        model: ['', 'gpt-5.4'],
+        model: ['gpt-5.4'],
       },
-      description: '공식 app-server service tier',
+      description: 'GPT-5.4 Fast 모드',
     },
   ];
 }
@@ -1547,8 +1546,8 @@ function isSandboxMode(value: unknown): value is string {
   return value === 'read-only' || value === 'workspace-write' || value === 'danger-full-access';
 }
 
-function isServiceTier(value: unknown): value is string {
-  return value === 'fast' || value === 'flex';
+function isSpeedMode(value: unknown): value is string {
+  return value === 'standard' || value === 'fast';
 }
 
 function isReasoningEffort(value: unknown): value is string {
