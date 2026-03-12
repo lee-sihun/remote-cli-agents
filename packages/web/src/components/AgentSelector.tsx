@@ -52,6 +52,7 @@ export default function AgentSelector({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
+        data-testid="agent-selector-button"
         className="flex items-center gap-2 px-3 py-2 rounded-lg bg-(--bg-secondary) border border-(--border) hover:bg-(--bg-tertiary) transition-colors w-full"
       >
         <Bot size={16} className="text-(--accent)" />

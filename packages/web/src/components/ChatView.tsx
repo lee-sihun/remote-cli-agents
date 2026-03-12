@@ -334,7 +334,11 @@ export default function ChatView({
 
   if (messages.length === 0 && !streamingContent) {
     return (
-      <div className="flex-1 flex items-center justify-center p-4">
+      <div
+        ref={containerRef}
+        data-testid="chat-view"
+        className="flex-1 flex items-center justify-center p-4"
+      >
         <div className="text-center">
           <Bot size={48} className="mx-auto text-(--text-muted) mb-4" />
           <h2 className="text-lg font-medium text-(--text-secondary) mb-1">
@@ -350,7 +354,11 @@ export default function ChatView({
   }
 
   return (
-    <div ref={containerRef} className="scroll-hover-area flex-1 overflow-y-auto p-4 sm:p-6">
+    <div
+      ref={containerRef}
+      data-testid="chat-view"
+      className="scroll-hover-area flex-1 overflow-y-auto p-4 sm:p-6"
+    >
       <div className="max-w-4xl mx-auto">
         {messages.map((msg) => (
           <MessageBubble key={msg.id} message={msg} />

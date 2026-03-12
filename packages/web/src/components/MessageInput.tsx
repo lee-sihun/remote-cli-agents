@@ -7,11 +7,12 @@ import type { AgentOptionDef, ContextUsage } from '../lib/protocol';
 interface InlineSelectProps {
   icon?: React.ReactNode;
   options: { value: string; label: string }[];
+  testId?: string;
   value: string;
   onChange: (value: string) => void;
 }
 
-const InlineSelect = ({ icon, options, value, onChange }: InlineSelectProps) => {
+const InlineSelect = ({ icon, options, testId, value, onChange }: InlineSelectProps) => {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const label = options.find((o) => o.value === value)?.label || 'Select';
@@ -33,6 +34,7 @@ const InlineSelect = ({ icon, options, value, onChange }: InlineSelectProps) => 
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        data-testid={testId}
         className={`flex items-center gap-1 px-2 py-1 rounded-lg transition-colors cursor-pointer text-xs ${
           open
             ? 'bg-(--bg-tertiary) text-(--text-secondary)'
@@ -82,8 +84,8 @@ interface MessageInputProps {
   disabled: boolean;
   /** 모델/추론 옵션 (입력창 내부 표시) */
   inputOptions: AgentOptionDef[];
-  /** 모드 옵션 (하단 툴바 표시) */
-  modeOption: AgentOptionDef | null;
+  /** 하단 툴바 옵션 */
+  footerOptions: AgentOptionDef[];
   /** 현재 설정값 */
   settingValues: Record<string, string>;
   onSettingChange: (key: string, value: string) => void;
@@ -97,7 +99,7 @@ const MessageInput = ({
   isRunning,
   disabled,
   inputOptions,
-  modeOption,
+  footerOptions,
   settingValues,
   onSettingChange,
   contextUsage,
@@ -148,6 +150,7 @@ const MessageInput = ({
   };
 
   const visibleInputOptions = inputOptions.filter(isVisible);
+  const visibleFooterOptions = footerOptions.filter(isVisible);
   const hasInputOptions = visibleInputOptions.length > 0;
   const isEmpty = !value;
 
@@ -197,6 +200,7 @@ const MessageInput = ({
                     key={opt.key}
                     icon={opt.key === 'model' ? <Zap size={12} /> : undefined}
                     options={opt.options}
+                    testId={`input-option-${opt.key}`}
                     value={settingValues[opt.key] || opt.defaultValue || ''}
                     onChange={(v) => onSettingChange(opt.key, v)}
                   />
@@ -233,17 +237,22 @@ const MessageInput = ({
         </div>
 
         {/* 하단 영역: 모드 (왼쪽) + 컨텍스트 사용량 (오른쪽) */}
-        {(modeOption || contextUsage) && (
+        {(visibleFooterOptions.length > 0 || contextUsage) && (
           <div className="flex items-center justify-between px-1 pt-1.5">
             {/* 왼쪽: 모드 셀렉터 */}
-            <div>
-              {modeOption && modeOption.type === 'select' && modeOption.options && (
-                <InlineSelect
-                  options={modeOption.options}
-                  value={settingValues[modeOption.key] || modeOption.defaultValue || ''}
-                  onChange={(v) => onSettingChange(modeOption.key, v)}
-                />
-              )}
+            <div className="flex items-center gap-0.5">
+              {visibleFooterOptions.map((option) => {
+                if (option.type !== 'select' || !option.options) return null;
+                return (
+                  <InlineSelect
+                    key={option.key}
+                    options={option.options}
+                    testId={`footer-option-${option.key}`}
+                    value={settingValues[option.key] || option.defaultValue || ''}
+                    onChange={(v) => onSettingChange(option.key, v)}
+                  />
+                );
+              })}
             </div>
 
             {/* 오른쪽: 컨텍스트 사용량 */}

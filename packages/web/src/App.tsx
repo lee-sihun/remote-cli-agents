@@ -90,10 +90,10 @@ function isOptionVisible(
 }
 
 function buildAgentConfig(
+  options: AgentOptionDef[],
   agentType: AgentType,
   settings: Record<string, string>,
 ): AgentConfig {
-  const options = AGENT_OPTIONS[agentType] || [];
   const config: AgentConfig = { type: agentType };
   const configRecord = config as unknown as Record<string, string>;
 
@@ -111,6 +111,13 @@ function buildAgentConfig(
   }
 
   return config;
+}
+
+function getAgentOptions(
+  agentType: AgentType,
+  agents: { type: AgentType; options?: AgentOptionDef[] }[],
+): AgentOptionDef[] {
+  return agents.find((agent) => agent.type === agentType)?.options || AGENT_OPTIONS[agentType] || [];
 }
 
 function sameSettings(a: Record<string, string>, b: Record<string, string>): boolean {
@@ -176,20 +183,20 @@ export default function App() {
   wsRef.current = ws;
 
   const syncAgentDefaults = useCallback((agent: AgentType) => {
-    const options = AGENT_OPTIONS[agent] || [];
-    if (options.length === 0) {
+    const resolvedOptions = getAgentOptions(agent, storeRef.current.agents);
+    if (resolvedOptions.length === 0) {
       return;
     }
 
     const settings = mergeAgentSettings(
-      options,
+      resolvedOptions,
       storeRef.current.lastUsedAgentSettings.get(agent),
     );
 
     wsRef.current.send({
       type: 'select_agent',
       agentType: agent,
-      config: buildAgentConfig(agent, settings),
+      config: buildAgentConfig(resolvedOptions, agent, settings),
     });
   }, []);
 
@@ -306,7 +313,7 @@ export default function App() {
       return;
     }
 
-    const options = AGENT_OPTIONS[store.activeAgent] || [];
+    const options = getAgentOptions(store.activeAgent, store.agents);
     const fallbackSettings = mergeAgentSettings(
       options,
       currentLastUsedSettings,
@@ -342,10 +349,10 @@ export default function App() {
       if (!s.activeAgent) return;
 
       const settings = mergeAgentSettings(
-        AGENT_OPTIONS[s.activeAgent] || [],
+        getAgentOptions(s.activeAgent, s.agents),
         s.agentSettings.get(s.activeAgent),
       );
-      const config = buildAgentConfig(s.activeAgent, settings);
+      const config = buildAgentConfig(getAgentOptions(s.activeAgent, s.agents), s.activeAgent, settings);
       s.setLastUsedAgentSettings(s.activeAgent, settings);
 
       // 새 대화: threadId를 클라이언트에서 생성
@@ -484,7 +491,7 @@ export default function App() {
 
       const updated = {
         ...mergeAgentSettings(
-          AGENT_OPTIONS[s.activeAgent] || [],
+          getAgentOptions(s.activeAgent, s.agents),
           s.agentSettings.get(s.activeAgent),
         ),
         [key]: value,
@@ -496,7 +503,7 @@ export default function App() {
       wsRef.current.send({
         type: 'select_agent',
         agentType: s.activeAgent,
-        config: buildAgentConfig(s.activeAgent, updated),
+        config: buildAgentConfig(getAgentOptions(s.activeAgent, s.agents), s.activeAgent, updated),
       });
     },
     [],
@@ -724,7 +731,7 @@ export default function App() {
                 isRunning={isRunning}
                 disabled={!store.activeAgent || ws.status !== 'connected'}
                 inputOptions={currentAgentOptions.filter((o) => o.key === 'model' || o.key === 'effortLevel')}
-                modeOption={currentAgentOptions.find((o) => o.key === 'permissionMode' || o.key === 'approvalMode') || null}
+                footerOptions={currentAgentOptions.filter((o) => o.key === 'permissionMode' || o.key === 'approvalMode' || o.key === 'sandboxMode' || o.key === 'serviceTier')}
                 settingValues={currentAgentSettings}
                 onSettingChange={handleAgentSettingChange}
                 contextUsage={contextUsage}
