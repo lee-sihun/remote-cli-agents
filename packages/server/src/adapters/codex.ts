@@ -55,6 +55,7 @@ interface CodexModelDescriptor {
 
 interface ThreadInfo {
   id: string;
+  remoteThreadId?: string;
   title: string;
   messages: AgentMessage[];
   createdAt: number;
@@ -191,13 +192,14 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   interrupt(threadId: string): void {
+    const thread = this.threads.get(threadId);
     const turnId = this.activeTurns.get(threadId);
-    if (!turnId) {
+    if (!turnId || !thread?.remoteThreadId) {
       return;
     }
 
     void this.sendRpc('turn/interrupt', {
-      threadId,
+      threadId: thread.remoteThreadId,
       turnId,
     }).catch(() => {
       // 인터럽트 실패는 무시
@@ -296,6 +298,7 @@ export class CodexAdapter implements AgentAdapter {
     for (const thread of savedThreads) {
       this.threads.set(thread.id, {
         id: thread.id,
+        remoteThreadId: thread.remoteThreadId,
         title: thread.title,
         messages: store.loadMessages(thread.id),
         createdAt: thread.createdAt,
@@ -400,8 +403,11 @@ export class CodexAdapter implements AgentAdapter {
 
     try {
       await this.ensureThreadLoaded(thread, config, threadExists);
+      if (!thread.remoteThreadId) {
+        throw new Error('Codex thread id was not initialized');
+      }
       const result = await this.sendRpc('turn/start', {
-        threadId,
+        threadId: thread.remoteThreadId,
         input: [
           {
             type: 'text',
@@ -458,14 +464,15 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private async ensureThreadLoaded(thread: ThreadInfo, config: AgentConfig, existingThread: boolean): Promise<void> {
-    if (this.loadedThreadIds.has(thread.id)) {
+    if (this.loadedThreadIds.has(thread.id) && thread.remoteThreadId) {
       return;
     }
 
     const params = buildThreadConfigParams(config);
-    const result = existingThread
+    const canResume = existingThread && Boolean(thread.remoteThreadId);
+    const result = canResume
       ? await this.sendRpc('thread/resume', {
-        threadId: thread.id,
+        threadId: thread.remoteThreadId,
         persistExtendedHistory: false,
         ...params,
       }) as CodexThreadStartResult
@@ -474,12 +481,6 @@ export class CodexAdapter implements AgentAdapter {
         persistExtendedHistory: false,
         ...params,
       }) as CodexThreadStartResult;
-
-    if (result.thread?.id && result.thread.id !== thread.id) {
-      this.threads.delete(thread.id);
-      thread.id = result.thread.id;
-      this.threads.set(thread.id, thread);
-    }
 
     this.loadedThreadIds.add(thread.id);
     this.updateThreadFromPayload(thread, result.thread, result.model, config);
@@ -570,8 +571,9 @@ export class CodexAdapter implements AgentAdapter {
 
   private handleServerRequest(request: JsonRpcServerRequest): void {
     const params = request.params || {};
-    const threadId = readString(params, 'threadId')
-      || readString(params, 'conversationId')
+    const remoteThreadId = readString(params, 'threadId')
+      || readString(params, 'conversationId');
+    const threadId = (remoteThreadId && this.resolveClientThreadId(remoteThreadId))
       || this.currentActiveThread()
       || '';
 
@@ -621,14 +623,18 @@ export class CodexAdapter implements AgentAdapter {
         if (!payload || !payloadId) {
           return;
         }
-        const thread = this.ensureThread(payloadId, this.config || { type: 'codex' }, readString(payload, 'preview') || payloadId);
-        this.loadedThreadIds.add(payloadId);
+        const thread = this.findThreadByRemoteId(payloadId);
+        if (!thread) {
+          return;
+        }
+        this.loadedThreadIds.add(thread.id);
         this.updateThreadFromPayload(thread, payload, undefined, thread.config || this.config || undefined);
         break;
       }
 
       case 'thread/name/updated': {
-        const threadId = readString(params, 'threadId');
+        const remoteThreadId = readString(params, 'threadId');
+        const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
         const name = readString(params, 'threadName');
         if (!threadId || !name) {
           return;
@@ -644,7 +650,8 @@ export class CodexAdapter implements AgentAdapter {
       }
 
       case 'thread/status/changed': {
-        const threadId = readString(params, 'threadId');
+        const remoteThreadId = readString(params, 'threadId');
+        const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
         const status = readRecord(params, 'status');
         if (!threadId || !status || this.activeTurns.has(threadId)) {
           return;
@@ -662,7 +669,8 @@ export class CodexAdapter implements AgentAdapter {
       }
 
       case 'thread/tokenUsage/updated': {
-        const threadId = readString(params, 'threadId');
+        const remoteThreadId = readString(params, 'threadId');
+        const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
         const tokenUsage = readRecord(params, 'tokenUsage');
         if (!threadId || !tokenUsage) {
           return;
@@ -693,7 +701,8 @@ export class CodexAdapter implements AgentAdapter {
       }
 
       case 'turn/started': {
-        const threadId = readString(params, 'threadId');
+        const remoteThreadId = readString(params, 'threadId');
+        const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
         const turn = readRecord(params, 'turn');
         const turnId = turn ? readString(turn, 'id') : undefined;
         if (!threadId || !turnId) {
@@ -705,7 +714,8 @@ export class CodexAdapter implements AgentAdapter {
       }
 
       case 'item/agentMessage/delta': {
-        const threadId = readString(params, 'threadId');
+        const remoteThreadId = readString(params, 'threadId');
+        const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
         const itemId = readString(params, 'itemId');
         const delta = readString(params, 'delta');
         if (!threadId || !delta) {
@@ -738,7 +748,8 @@ export class CodexAdapter implements AgentAdapter {
       }
 
       case 'model/rerouted': {
-        const threadId = readString(params, 'threadId');
+        const remoteThreadId = readString(params, 'threadId');
+        const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
         const toModel = readString(params, 'toModel');
         if (!threadId || !toModel) {
           return;
@@ -765,7 +776,10 @@ export class CodexAdapter implements AgentAdapter {
       }
 
       case 'error': {
-        const threadId = this.currentActiveThread() || readString(params, 'threadId') || '';
+        const remoteThreadId = readString(params, 'threadId');
+        const threadId = (remoteThreadId && this.resolveClientThreadId(remoteThreadId))
+          || this.currentActiveThread()
+          || '';
         const message = readString(params, 'message') || 'Codex app-server error';
         this.emit({
           type: 'error',
@@ -783,7 +797,8 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private handleItemStarted(params: Record<string, unknown>): void {
-    const threadId = readString(params, 'threadId');
+    const remoteThreadId = readString(params, 'threadId');
+    const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
     const item = readRecord(params, 'item');
     if (!threadId || !item) {
       return;
@@ -812,7 +827,8 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private handleItemCompleted(params: Record<string, unknown>): void {
-    const threadId = readString(params, 'threadId');
+    const remoteThreadId = readString(params, 'threadId');
+    const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
     const item = readRecord(params, 'item');
     if (!threadId || !item) {
       return;
@@ -856,7 +872,8 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private handleTurnCompleted(params: Record<string, unknown>): void {
-    const threadId = readString(params, 'threadId');
+    const remoteThreadId = readString(params, 'threadId');
+    const threadId = remoteThreadId ? this.resolveClientThreadId(remoteThreadId) : undefined;
     const turn = readRecord(params, 'turn');
     if (!threadId || !turn) {
       return;
@@ -933,12 +950,29 @@ export class CodexAdapter implements AgentAdapter {
     return activeThreads[activeThreads.length - 1];
   }
 
+  private findThreadByRemoteId(remoteThreadId: string): ThreadInfo | undefined {
+    for (const thread of this.threads.values()) {
+      if (thread.remoteThreadId === remoteThreadId) {
+        return thread;
+      }
+    }
+
+    return this.threads.get(remoteThreadId);
+  }
+
+  private resolveClientThreadId(remoteThreadId: string): string | undefined {
+    return this.findThreadByRemoteId(remoteThreadId)?.id;
+  }
+
   private updateThreadFromPayload(
     thread: ThreadInfo,
     payload?: CodexThreadPayload,
     model?: string,
     config?: AgentConfig,
   ): void {
+    if (payload?.id) {
+      thread.remoteThreadId = payload.id;
+    }
     if (payload?.name) {
       thread.title = payload.name;
     } else if (!thread.title && payload?.preview) {
@@ -1388,6 +1422,7 @@ function toThreadSummary(thread: ThreadInfo): ThreadSummary {
     cwd: thread.cwd,
     model: thread.model,
     contextUsage: thread.contextUsage,
+    remoteThreadId: thread.remoteThreadId,
     config: thread.config,
   };
 }

@@ -199,6 +199,8 @@ export interface ThreadSummary {
   contextUsage?: ContextUsage;
   /** Claude Code 세션 ID (--resume용, 디스크 저장) */
   sessionId?: string;
+  /** 에이전트 원본 스레드 ID (Codex app-server 등) */
+  remoteThreadId?: string;
   /** 스레드별 실행 설정 스냅샷 */
   config?: AgentConfig;
 }

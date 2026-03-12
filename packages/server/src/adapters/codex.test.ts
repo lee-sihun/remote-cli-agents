@@ -171,7 +171,7 @@ describe('CodexAdapter', () => {
     );
   });
 
-  it('starts a new thread with v2 turn/start payloads and persists the assistant reply', async () => {
+  it('starts a new thread with the remote Codex thread id and persists the assistant reply', async () => {
     const proc = createFakeChildProcess();
     childProcessMock.spawn.mockReturnValue(proc);
     const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
@@ -218,7 +218,7 @@ describe('CodexAdapter', () => {
     const { CodexAdapter } = await import('./codex.ts');
     const adapter = new CodexAdapter();
     await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-new', 'Reply with exactly OK', {
+    adapter.sendMessage('client-thread-new', 'Reply with exactly OK', {
       type: 'codex',
       cwd: 'C:/workspace',
       model: 'gpt-5.4',
@@ -296,11 +296,18 @@ describe('CodexAdapter', () => {
     await flushStreamEvents();
 
     expect(storeMock.appendMessage).toHaveBeenCalledWith(
-      'thread-new',
+      'client-thread-new',
       expect.objectContaining({
         role: 'assistant',
         content: 'OK',
         model: 'gpt-5.4',
+      }),
+    );
+    expect(storeMock.saveThread).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        id: 'client-thread-new',
+        remoteThreadId: 'thread-new',
       }),
     );
     expect(adapter.getStatus().state).toBe('idle');
@@ -308,19 +315,20 @@ describe('CodexAdapter', () => {
 
   it('resumes stored threads before sending and uses the active turn id for interrupts', async () => {
     storeState.threads.set('codex', [{
-      id: 'thread-resume',
+      id: 'client-thread-resume',
       agentType: 'codex',
       title: 'Stored thread',
       messageCount: 1,
       createdAt: 1,
       updatedAt: 2,
       cwd: 'C:/workspace',
+      remoteThreadId: 'thread-resume',
       config: {
         type: 'codex',
         model: 'gpt-5.4',
       },
     }]);
-    storeState.messages.set('thread-resume', [{
+    storeState.messages.set('client-thread-resume', [{
       id: 'message-1',
       role: 'user',
       content: 'hello',
@@ -374,7 +382,7 @@ describe('CodexAdapter', () => {
     const { CodexAdapter } = await import('./codex.ts');
     const adapter = new CodexAdapter();
     await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-resume', 'continue', {
+    adapter.sendMessage('client-thread-resume', 'continue', {
       type: 'codex',
       cwd: 'C:/workspace',
       sandboxMode: 'workspace-write',
@@ -395,7 +403,7 @@ describe('CodexAdapter', () => {
     })}\n`);
     await flushStreamEvents();
 
-    adapter.interrupt('thread-resume');
+    adapter.interrupt('client-thread-resume');
     await flushStreamEvents();
 
     expect(requests.find((request) => request.method === 'thread/resume')?.params).toEqual(expect.objectContaining({
@@ -407,6 +415,90 @@ describe('CodexAdapter', () => {
       threadId: 'thread-resume',
       turnId: 'turn-resume',
     });
+  });
+
+  it('starts a fresh Codex thread for legacy stored threads without a remote thread id', async () => {
+    storeState.threads.set('codex', [{
+      id: 'legacy-local-thread',
+      agentType: 'codex',
+      title: 'Legacy thread',
+      messageCount: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      cwd: 'C:/workspace',
+      config: {
+        type: 'codex',
+        model: 'gpt-5.4',
+      },
+    }]);
+
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+
+    wireCodexRpc(proc, (request) => {
+      requests.push({ method: request.method, params: request.params });
+
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-migrated',
+              createdAt: 1,
+              updatedAt: 2,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-migrated',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('legacy-local-thread', 'continue', {
+      type: 'codex',
+      cwd: 'C:/workspace',
+    });
+
+    await flushStreamEvents();
+
+    expect(requests.some((request) => request.method === 'thread/resume')).toBe(false);
+    expect(requests.find((request) => request.method === 'turn/start')?.params).toEqual({
+      threadId: 'thread-migrated',
+      input: [{
+        type: 'text',
+        text: 'continue',
+        text_elements: [],
+      }],
+    });
+    expect(storeMock.saveThread).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        id: 'legacy-local-thread',
+        remoteThreadId: 'thread-migrated',
+      }),
+    );
   });
 
   it('relays approval requests back to app-server responses', async () => {
