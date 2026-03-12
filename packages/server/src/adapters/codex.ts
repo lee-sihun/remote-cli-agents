@@ -68,6 +68,7 @@ interface ThreadInfo {
 }
 
 interface PendingRpcRequest {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -188,6 +189,13 @@ export class CodexAdapter implements AgentAdapter {
       type: 'codex',
     });
 
+    console.log(`[codex] Queueing turn for client thread ${tid} ${formatCodexLog({
+      model: runConfig.model || '',
+      approvalMode: runConfig.approvalMode || '',
+      sandboxMode: readConfigString(runConfig, 'sandboxMode') || '',
+      serviceTier: readConfigString(runConfig, 'serviceTier') || '',
+      cwd: runConfig.cwd || '',
+    })}`);
     void this.runTurn(tid, message, runConfig);
   }
 
@@ -213,6 +221,12 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     const response = buildApprovalResponse(approval.method, approval.params, approved);
+    console.log(`[codex approval <-] ${approval.method} ${formatCodexLog({
+      threadId,
+      toolCallId,
+      approved,
+      response,
+    })}`);
     this.writeJson({
       jsonrpc: '2.0',
       id: approval.id,
@@ -501,6 +515,8 @@ export class CodexAdapter implements AgentAdapter {
         params,
       };
 
+      console.log(`[codex rpc ->] ${method} ${formatCodexLog(params || {})}`);
+
       const timer = setTimeout(() => {
         const pending = this.pendingRequests.get(id);
         if (!pending) {
@@ -508,10 +524,11 @@ export class CodexAdapter implements AgentAdapter {
         }
 
         this.pendingRequests.delete(id);
+        console.error(`[codex rpc !!] ${method} timeout`);
         pending.reject(new Error(`RPC timeout: ${method}`));
       }, 30_000);
 
-      this.pendingRequests.set(id, { resolve, reject, timer });
+      this.pendingRequests.set(id, { method, resolve, reject, timer });
       this.writeJson(request as unknown as Record<string, unknown>);
     });
   }
@@ -552,19 +569,25 @@ export class CodexAdapter implements AgentAdapter {
       this.pendingRequests.delete(parsed.id);
 
       if ('error' in parsed) {
+        console.error(`[codex rpc !!] ${pending.method} ${formatCodexLog(parsed.error)}`);
         pending.reject(new Error(parsed.error.message));
       } else {
+        console.log(`[codex rpc <-] ${pending.method} ${formatCodexLog(parsed.result)}`);
         pending.resolve(parsed.result);
       }
       return;
     }
 
     if ('id' in parsed && typeof parsed.id === 'number' && 'method' in parsed) {
+      console.log(`[codex approval ->] ${parsed.method} ${formatCodexLog(parsed.params || {})}`);
       this.handleServerRequest(parsed);
       return;
     }
 
     if ('method' in parsed) {
+      if (shouldLogCodexNotification(parsed.method)) {
+        console.log(`[codex event] ${parsed.method} ${formatCodexLog(parsed.params || {})}`);
+      }
       this.handleNotification(parsed.method, parsed.params || {});
     }
   }
@@ -1493,4 +1516,51 @@ function isReasoningEffort(value: unknown): value is string {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function shouldLogCodexNotification(method: string): boolean {
+  return method !== 'item/agentMessage/delta';
+}
+
+function formatCodexLog(value: unknown): string {
+  try {
+    return JSON.stringify(summarizeCodexLogValue(value));
+  } catch {
+    return '[unserializable]';
+  }
+}
+
+function summarizeCodexLogValue(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+  }
+
+  if (typeof value !== 'object') {
+    return value;
+  }
+
+  if (depth >= 3) {
+    return '[depth-limited]';
+  }
+
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 4).map((item) => summarizeCodexLogValue(item, depth + 1));
+    if (value.length > 4) {
+      items.push(`...(${value.length - 4} more)`);
+    }
+    return items;
+  }
+
+  const record = value as Record<string, unknown>;
+  const summarized: Record<string, unknown> = {};
+
+  for (const [key, entry] of Object.entries(record)) {
+    summarized[key] = summarizeCodexLogValue(entry, depth + 1);
+  }
+
+  return summarized;
 }
