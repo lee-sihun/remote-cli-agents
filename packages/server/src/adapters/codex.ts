@@ -475,6 +475,7 @@ export class CodexAdapter implements AgentAdapter {
       createdAt: now,
       updatedAt: now,
       cwd: config.cwd,
+      workspaceId: config.workspaceId,
       config,
     };
     this.threads.set(threadId, thread);

@@ -762,6 +762,72 @@ describe('CodexAdapter', () => {
     );
   });
 
+  it('propagates workspaceId from config to new thread and persists correctly', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const requests: { method: string; params?: Record<string, unknown> }[] = [];
+
+    wireCodexRpc(proc, (request) => {
+      requests.push({ method: request.method, params: request.params as Record<string, unknown> });
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: { id: 'thread-ws-prop', createdAt: 1, updatedAt: 1, cwd: 'C:/project-a' },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: { turn: { id: 'turn-ws', status: 'inProgress', error: null } },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    adapter.onEvent(() => {});
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+
+    // workspaceId가 포함된 config으로 새 스레드 생성
+    adapter.sendMessage('client-ws-thread', 'test workspace', {
+      type: 'codex',
+      cwd: 'C:/project-a',
+      workspaceId: 'ws-xyz789',
+    });
+
+    await flushStreamEvents();
+
+    // 턴 완료 이벤트
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: { threadId: 'thread-ws-prop', turn: { id: 'turn-ws', status: 'inProgress', error: null } },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: { threadId: 'thread-ws-prop', turn: { id: 'turn-ws', status: 'completed', error: null } },
+    })}\n`);
+    await flushStreamEvents();
+
+    // saveThread 호출 시 workspaceId 'ws-xyz789'으로 저장
+    expect(storeMock.saveThread).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        id: 'client-ws-thread',
+        workspaceId: 'ws-xyz789',
+      }),
+      'ws-xyz789',
+    );
+  });
+
   it('relays approval requests back to app-server responses', async () => {
     const proc = createFakeChildProcess();
     childProcessMock.spawn.mockReturnValue(proc);

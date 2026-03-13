@@ -30,6 +30,8 @@ interface FakeAdapter {
 
 const storeMock = vi.hoisted(() => ({
   loadMessages: vi.fn(),
+  getWorkspace: vi.fn(),
+  touchWorkspace: vi.fn(),
 }));
 
 vi.mock('./store.js', () => storeMock);
@@ -422,5 +424,42 @@ describe('server helpers', () => {
       model: 'opus',
       permissionMode: 'plan',
     });
+  });
+
+  it('injects workspace cwd and workspaceId into config on send_message', async () => {
+    const ws = createFakeWebSocket();
+    const adapter = createFakeAdapter();
+    const adapters = new Map<AgentType, FakeAdapter>([['claude', adapter]]);
+
+    storeMock.getWorkspace.mockReturnValue({
+      id: 'ws-inject',
+      name: 'Test WS',
+      path: 'C:/projects/my-app',
+      createdAt: 1,
+      lastAccessedAt: 1,
+    });
+
+    await handleClientMessage(
+      ws as unknown as WebSocket,
+      {
+        type: 'send_message',
+        agentType: 'claude',
+        threadId: 'thread-ws-inject',
+        content: 'build',
+        workspaceId: 'ws-inject',
+      } satisfies ClientMessage,
+      adapters as never,
+      'C:/workspace',
+    );
+
+    expect(adapter.sendMessage).toHaveBeenCalledWith(
+      'thread-ws-inject',
+      'build',
+      expect.objectContaining({
+        cwd: 'C:/projects/my-app',
+        workspaceId: 'ws-inject',
+      }),
+    );
+    expect(storeMock.touchWorkspace).toHaveBeenCalledWith('ws-inject');
   });
 });

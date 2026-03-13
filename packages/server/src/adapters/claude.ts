@@ -449,7 +449,7 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: existingThread?.createdAt || now,
       updatedAt: now,
       cwd: cwd || runConfig.cwd,
-      workspaceId: existingThread?.workspaceId,
+      workspaceId: existingThread?.workspaceId || runConfig.workspaceId,
       contextUsage: existingThread?.contextUsage,
       config: runConfig,
       permissionBridgeConfigPath,

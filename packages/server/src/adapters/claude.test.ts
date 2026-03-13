@@ -534,6 +534,33 @@ describe('ClaudeAdapter', () => {
     }));
   });
 
+  it('propagates workspaceId from config to new thread and persists correctly', async () => {
+    const proc = createFakeChildProcess();
+    proc.pid = 9601;
+    childProcessMock.spawn.mockReturnValue(proc);
+    const { ClaudeAdapter } = await import('./claude.ts');
+
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+
+    // workspaceId가 포함된 config으로 새 스레드 생성
+    adapter.sendMessage('thread-ws-prop', 'hello', {
+      type: 'claude',
+      cwd: 'C:/project-a',
+      workspaceId: 'ws-abc123',
+    });
+
+    // saveThread 호출 시 workspaceId 'ws-abc123'으로 저장
+    expect(storeMock.saveThread).toHaveBeenCalledWith(
+      'claude',
+      expect.objectContaining({
+        id: 'thread-ws-prop',
+        workspaceId: 'ws-abc123',
+      }),
+      'ws-abc123',
+    );
+  });
+
   it('restores saved threads on start and resumes with persisted session id', async () => {
     storeState.threads.set('claude', [{
       id: 'thread-restored',
