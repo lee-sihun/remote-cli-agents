@@ -25,6 +25,8 @@ import ConnectScreen from './components/ConnectScreen';
 import ChatView from './components/ChatView';
 import ThreadList from './components/ThreadList';
 import AgentSelector from './components/AgentSelector';
+import WorkspaceSelector from './components/WorkspaceSelector';
+import FolderBrowser from './components/FolderBrowser';
 import StatusBar from './components/StatusBar';
 import MessageInput from './components/MessageInput';
 import ApprovalBar from './components/ApprovalBar';
@@ -71,6 +73,7 @@ export default function App() {
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [connectionModalOpen, setConnectionModalOpen] = useState(false);
+  const [folderBrowserOpen, setFolderBrowserOpen] = useState(false);
   const autoOpenedConnectionModal = useRef(false);
 
   // Store (ref 패턴으로 안정적인 콜백 유지)
@@ -122,11 +125,12 @@ export default function App() {
   useEffect(() => {
     if (ws.status === 'connected') {
       ws.send({ type: 'list_agents' });
+      ws.send({ type: 'list_workspaces' });
 
       // 저장된 activeAgent/activeThread 복원
       const s = storeRef.current;
       if (s.activeAgent) {
-        ws.send({ type: 'list_threads', agentType: s.activeAgent });
+        ws.send({ type: 'list_threads', agentType: s.activeAgent, workspaceId: s.activeWorkspace || undefined });
         syncAgentDefaults(s.activeAgent);
 
         // 활성 스레드 상태 복원 (메시지 + 스트리밍 + 에이전트 상태)
@@ -144,7 +148,7 @@ export default function App() {
     if (ws.status === 'connected' && store.activeAgent) {
       // 에이전트가 변경되었을 때만 (동일 에이전트 중복 요청 방지)
       if (prevAgentRef.current !== store.activeAgent) {
-        ws.send({ type: 'list_threads', agentType: store.activeAgent });
+        ws.send({ type: 'list_threads', agentType: store.activeAgent, workspaceId: store.activeWorkspace || undefined });
       }
       prevAgentRef.current = store.activeAgent;
     }
@@ -277,6 +281,7 @@ export default function App() {
         threadId,
         content,
         config,
+        workspaceId: s.activeWorkspace || undefined,
       });
     },
     [],
@@ -382,6 +387,42 @@ export default function App() {
     [],
   );
 
+  // ─── 워크스페이스 핸들러 ───
+
+  const handleSelectWorkspace = useCallback(
+    (workspaceId: string) => {
+      storeRef.current.setActiveWorkspace(workspaceId);
+      // 워크스페이스 변경 시 스레드 목록 다시 요청
+      const agent = storeRef.current.activeAgent;
+      if (agent) {
+        wsRef.current.send({ type: 'list_threads', agentType: agent, workspaceId });
+      }
+    },
+    [],
+  );
+
+  const handleCreateWorkspace = useCallback(
+    (name: string, path: string) => {
+      wsRef.current.send({ type: 'create_workspace', name, path });
+      setFolderBrowserOpen(false);
+    },
+    [],
+  );
+
+  const handleRenameWorkspace = useCallback(
+    (id: string, name: string) => {
+      wsRef.current.send({ type: 'update_workspace', id, name });
+    },
+    [],
+  );
+
+  const handleDeleteWorkspace = useCallback(
+    (id: string) => {
+      wsRef.current.send({ type: 'delete_workspace', id });
+    },
+    [],
+  );
+
   const handleAgentSettingChange = useCallback(
     (key: string, value: string) => {
       const s = storeRef.current;
@@ -423,6 +464,18 @@ export default function App() {
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         } sidebar-panel`}
       >
+        {/* Workspace selector */}
+        <div className="p-3 border-b border-(--border)">
+          <WorkspaceSelector
+            workspaces={store.workspaces}
+            activeWorkspace={store.activeWorkspace}
+            onSelect={handleSelectWorkspace}
+            onCreateNew={() => setFolderBrowserOpen(true)}
+            onRename={handleRenameWorkspace}
+            onDelete={handleDeleteWorkspace}
+          />
+        </div>
+
         {/* Agent selector */}
         <div className="p-3 border-b border-(--border)">
           <AgentSelector
@@ -631,6 +684,15 @@ export default function App() {
         onSend={handleGitSend}
         fileEntries={store.fileEntries}
         fileContent={store.fileContent}
+      />
+
+      {/* Folder browser modal */}
+      <FolderBrowser
+        open={folderBrowserOpen}
+        onClose={() => setFolderBrowserOpen(false)}
+        onSelect={handleCreateWorkspace}
+        onSend={handleGitSend}
+        directoryEntries={store.directoryEntries}
       />
     </div>
   );

@@ -9,11 +9,18 @@ import type {
   ToolCall,
   ServerMessage,
   FileEntry,
+  Workspace,
+  DirEntry,
 } from '../lib/protocol';
 
 interface AgentState {
   // Connection
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
+
+  // Workspaces
+  workspaces: Workspace[];
+  activeWorkspace: string | null;
+  directoryEntries: Map<string, DirEntry[]>;
 
   // Agents
   agents: AgentInfo[];
@@ -45,6 +52,7 @@ interface AgentState {
 
   // Actions
   setConnectionStatus: (status: 'disconnected' | 'connecting' | 'connected') => void;
+  setActiveWorkspace: (workspaceId: string | null) => void;
   setActiveAgent: (agent: AgentType | null) => void;
   setActiveThread: (threadId: string | null) => void;
   setAgentSettings: (agent: AgentType, settings: Record<string, string>) => void;
@@ -143,6 +151,10 @@ function reconcilePendingApprovals(
 export const useAgentStore = create<AgentState>((set, get) => ({
   connectionStatus: 'disconnected',
 
+  workspaces: [],
+  activeWorkspace: loadSaved<string | null>('rca_active_workspace', null),
+  directoryEntries: new Map(),
+
   agents: [],
   agentStatuses: new Map(),
   activeAgent: loadSaved<AgentType | null>('rca_active_agent', null),
@@ -165,6 +177,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   lastUsedAgentSettings: loadSavedAgentSettings('rca_last_used_agent_settings'),
 
   setConnectionStatus: (status) => set({ connectionStatus: status }),
+
+  setActiveWorkspace: (workspaceId) => {
+    saveTo('rca_active_workspace', workspaceId);
+    set({ activeWorkspace: workspaceId, activeThread: null });
+    saveTo('rca_active_thread', null);
+  },
 
   setActiveAgent: (agent) => {
     saveTo('rca_active_agent', agent);
@@ -554,6 +572,47 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         }
 
         set(updates);
+        break;
+      }
+
+      case 'workspaces_list': {
+        set({ workspaces: msg.workspaces });
+        // 자동 선택: 활성 워크스페이스가 없거나 삭제된 경우
+        const wsId = state.activeWorkspace;
+        if (msg.workspaces.length > 0 && (!wsId || !msg.workspaces.find((w) => w.id === wsId))) {
+          const firstWs = msg.workspaces.sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)[0];
+          saveTo('rca_active_workspace', firstWs.id);
+          set({ activeWorkspace: firstWs.id });
+        }
+        break;
+      }
+
+      case 'workspace_created': {
+        const workspaces = [...state.workspaces, msg.workspace];
+        saveTo('rca_active_workspace', msg.workspace.id);
+        set({ workspaces, activeWorkspace: msg.workspace.id, activeThread: null });
+        saveTo('rca_active_thread', null);
+        break;
+      }
+
+      case 'workspace_deleted': {
+        const workspaces = state.workspaces.filter((w) => w.id !== msg.id);
+        const updates: Partial<AgentState> = { workspaces };
+        if (state.activeWorkspace === msg.id) {
+          const next = workspaces.length > 0 ? workspaces[0].id : null;
+          updates.activeWorkspace = next;
+          updates.activeThread = null;
+          saveTo('rca_active_workspace', next);
+          saveTo('rca_active_thread', null);
+        }
+        set(updates);
+        break;
+      }
+
+      case 'directory_list': {
+        const entries = new Map(state.directoryEntries);
+        entries.set(msg.path, msg.entries);
+        set({ directoryEntries: entries });
         break;
       }
 

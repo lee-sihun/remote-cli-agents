@@ -16,6 +16,8 @@ export type {
   ClientMessage,
   ServerMessage,
   FileEntry,
+  DirEntry,
+  Workspace,
   QRPayload,
   RelayRole,
 } from '@rca/shared';
