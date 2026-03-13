@@ -38,10 +38,6 @@ function agentLabel(type: AgentType): string {
       return 'Claude';
     case 'codex':
       return 'Codex';
-    case 'gemini':
-      return 'Gemini';
-    case 'pty':
-      return 'Terminal';
     default:
       return type;
   }

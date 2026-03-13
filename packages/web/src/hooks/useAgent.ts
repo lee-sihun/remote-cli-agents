@@ -537,10 +537,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             break;
           }
 
-          case 'pty_output': {
-            // PTY output is handled directly in TerminalView via onMessage
-            break;
-          }
         }
         break;
       }

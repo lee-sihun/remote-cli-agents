@@ -1,6 +1,6 @@
 // ─── Agent Types ───
 
-export type AgentType = "claude" | "codex" | "gemini" | "pty";
+export type AgentType = "claude" | "codex";
 
 export interface AgentInfo {
   type: AgentType;
@@ -145,8 +145,6 @@ export const CODEX_OPTIONS: AgentOptionDef[] = [
 export const AGENT_OPTIONS: Record<AgentType, AgentOptionDef[]> = {
   claude: CLAUDE_OPTIONS,
   codex: CODEX_OPTIONS,
-  gemini: [],
-  pty: [],
 };
 
 // ─── Message Types ───
@@ -257,13 +255,7 @@ export type AgentEvent =
       tool: ToolCall;
     }
   | { type: "error"; threadId: string; agentType: AgentType; error: string }
-  | { type: "status_change"; agentType: AgentType; status: AgentStatus }
-  | {
-      type: "pty_output";
-      threadId: string;
-      agentType: AgentType;
-      data: string;
-    };
+  | { type: "status_change"; agentType: AgentType; status: AgentStatus };
 
 // ─── Client → Server Messages ───
 
@@ -295,8 +287,6 @@ export type ClientMessage =
   | { type: "get_thread_state"; agentType: AgentType; threadId: string }
   | { type: "list_agents" }
   | { type: "select_agent"; agentType: AgentType; config?: AgentConfig }
-  | { type: "pty_input"; agentType: AgentType; threadId: string; data: string }
-  | { type: "pty_resize"; cols: number; rows: number }
   | { type: "git"; action: string; params?: Record<string, unknown> }
   | { type: "file_list"; path: string }
   | { type: "file_read"; path: string }

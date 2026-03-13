@@ -16,8 +16,6 @@ import { AGENT_OPTIONS } from '@rca/shared';
 import type { AgentAdapter } from './adapters/types.js';
 import { ClaudeAdapter } from './adapters/claude.js';
 import { CodexAdapter } from './adapters/codex.js';
-import { GeminiAdapter } from './adapters/gemini.js';
-import { PtyAdapter } from './adapters/pty.js';
 import { setupRelay, getRelayStats } from './relay/relay.js';
 import * as store from './store.js';
 import { sessionManager } from './session.js';
@@ -358,8 +356,6 @@ async function initializeAdapters(
       permissionBridgeScriptPath,
     }),
     new CodexAdapter(),
-    new GeminiAdapter(),
-    new PtyAdapter(),
   ];
 
   for (const adapter of candidates) {
@@ -374,18 +370,6 @@ async function initializeAdapters(
       }
     } catch (err) {
       console.error(`[server] Failed to init ${adapter.name}: ${err}`);
-    }
-  }
-
-  // PTY 어댑터는 항상 추가 (폴백)
-  if (!adapters.has('pty')) {
-    const ptyAdapter = new PtyAdapter();
-    try {
-      await ptyAdapter.start({ type: 'pty', cwd });
-      adapters.set('pty', ptyAdapter);
-      console.log(`[server] PTY fallback adapter ready`);
-    } catch {
-      console.log(`[server] PTY adapter not available (node-pty not installed)`);
     }
   }
 }
@@ -412,18 +396,6 @@ async function getAgentsList(
       available: adapters.has('codex'),
       description: 'OpenAI Codex - app-server protocol',
       options: codexOptions,
-    },
-    {
-      type: 'gemini',
-      name: 'Gemini CLI',
-      available: adapters.has('gemini'),
-      description: 'Google Gemini CLI - PTY mode',
-    },
-    {
-      type: 'pty',
-      name: 'Generic PTY',
-      available: adapters.has('pty'),
-      description: 'Generic PTY terminal - fallback for any CLI',
     },
   ];
 
@@ -619,35 +591,6 @@ export async function handleClientMessage(
 
       const agents = await getAgentsList(adapters);
       sendToClient(ws, { type: 'agents_list', agents });
-      break;
-    }
-
-    case 'pty_input': {
-      const adapter = adapters.get(msg.agentType);
-      if (adapter && 'writeRaw' in adapter) {
-        (adapter as { writeRaw: (threadId: string, data: string) => void }).writeRaw(
-          msg.threadId,
-          msg.data,
-        );
-      }
-      break;
-    }
-
-    case 'pty_resize': {
-      // 모든 PTY 어댑터에 리사이즈 전파
-      for (const [, adapter] of adapters) {
-        if ('resize' in adapter) {
-          // 활성 스레드 모두에 적용
-          const threads = await adapter.getThreads();
-          for (const thread of threads) {
-            (adapter as { resize: (threadId: string, cols: number, rows: number) => void }).resize(
-              thread.id,
-              msg.cols,
-              msg.rows,
-            );
-          }
-        }
-      }
       break;
     }
 

@@ -6,8 +6,6 @@ import {
   Moon,
   GitBranch,
   FolderOpen,
-  Terminal,
-  MessageSquare,
   Loader2,
   Square,
   PanelLeftClose,
@@ -25,8 +23,6 @@ import {
 import { resolveActiveThreadMeta } from './lib/activeThreadMeta';
 import ConnectScreen from './components/ConnectScreen';
 import ChatView from './components/ChatView';
-import TerminalView from './components/TerminalView';
-import type { TerminalViewHandle } from './components/TerminalView';
 import ThreadList from './components/ThreadList';
 import AgentSelector from './components/AgentSelector';
 import StatusBar from './components/StatusBar';
@@ -75,10 +71,7 @@ export default function App() {
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [filePanelOpen, setFilePanelOpen] = useState(false);
   const [connectionModalOpen, setConnectionModalOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<'chat' | 'terminal'>('chat');
   const autoOpenedConnectionModal = useRef(false);
-
-  const terminalRef = useRef<TerminalViewHandle>(null);
 
   // Store (ref 패턴으로 안정적인 콜백 유지)
   const store = useAgentStore();
@@ -89,14 +82,6 @@ export default function App() {
   const handleMessage = useCallback(
     (msg: ServerMessage) => {
       storeRef.current.processServerMessage(msg);
-
-      // Forward PTY output to terminal
-      if (
-        msg.type === 'agent_event' &&
-        msg.event.type === 'pty_output'
-      ) {
-        terminalRef.current?.write(msg.event.data);
-      }
     },
     [],
   );
@@ -165,19 +150,6 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.status, store.activeAgent]);
-
-  // Determine if current agent uses PTY mode
-  const isPtyAgent =
-    store.activeAgent === 'pty' || store.activeAgent === 'gemini';
-
-  // Auto-switch view mode based on agent type
-  useEffect(() => {
-    if (isPtyAgent) {
-      setViewMode('terminal');
-    } else {
-      setViewMode('chat');
-    }
-  }, [isPtyAgent]);
 
   useEffect(() => {
     if (ws.status === 'disconnected' && ws.reconnectState.exhausted) {
@@ -403,27 +375,6 @@ export default function App() {
     closeSidebarOnMobile();
   }, [activeThreadSummary?.config, closeSidebarOnMobile]);
 
-  const handleTerminalInput = useCallback(
-    (data: string) => {
-      const s = storeRef.current;
-      if (!s.activeAgent || !s.activeThread) return;
-      wsRef.current.send({
-        type: 'pty_input',
-        agentType: s.activeAgent,
-        threadId: s.activeThread,
-        data,
-      });
-    },
-    [],
-  );
-
-  const handleTerminalResize = useCallback(
-    (cols: number, rows: number) => {
-      wsRef.current.send({ type: 'pty_resize', cols, rows });
-    },
-    [],
-  );
-
   const handleGitSend = useCallback(
     (msg: ClientMessage) => {
       wsRef.current.send(msg);
@@ -557,34 +508,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-1">
-            {/* View mode toggle (for PTY-capable agents) */}
-            {isPtyAgent && (
-              <div className="flex items-center bg-(--bg-secondary) rounded-lg p-0.5 mr-2">
-                <button
-                  onClick={() => setViewMode('chat')}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                    viewMode === 'chat'
-                      ? 'bg-(--bg-tertiary) text-(--text-primary)'
-                      : 'text-(--text-muted) hover:text-(--text-secondary)'
-                  }`}
-                >
-                  <MessageSquare size={12} />
-                  Chat
-                </button>
-                <button
-                  onClick={() => setViewMode('terminal')}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                    viewMode === 'terminal'
-                      ? 'bg-(--bg-tertiary) text-(--text-primary)'
-                      : 'text-(--text-muted) hover:text-(--text-secondary)'
-                  }`}
-                >
-                  <Terminal size={12} />
-                  Terminal
-                </button>
-              </div>
-            )}
-
             {/* Git panel button */}
             <button
               onClick={() => {
@@ -630,38 +553,28 @@ export default function App() {
 
         {/* Main view */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {viewMode === 'terminal' ? (
-            <div className="flex-1 p-2 sm:p-4">
-              <TerminalView
-                ref={terminalRef}
-                onInput={handleTerminalInput}
-                onResize={handleTerminalResize}
-              />
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col relative min-h-0 overflow-hidden">
-              <ChatView
-                messages={currentMessages}
-                streamingContent={currentStreaming}
-                activeToolCalls={currentToolCalls}
-              />
+          <div className="flex-1 flex flex-col relative min-h-0 overflow-hidden">
+            <ChatView
+              messages={currentMessages}
+              streamingContent={currentStreaming}
+              activeToolCalls={currentToolCalls}
+            />
 
-              {/* 실행 중 오버레이 (채팅 영역 하단) */}
-              {isRunning && (
-                <div className="absolute bottom-0 left-0 right-0 flex justify-center pb-3 pointer-events-none z-10">
-                  <button
-                    onClick={handleInterrupt}
-                    className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-(--bg-secondary) border border-(--border) shadow-lg text-xs text-(--text-muted) hover:bg-(--bg-tertiary) hover:text-(--text-primary) transition-colors"
-                  >
-                    <Loader2 size={12} className="animate-spin" />
-                    <span>Agent is working...</span>
-                    <Square size={10} fill="currentColor" className="text-(--error)" />
-                    <span className="text-(--error)">Stop</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+            {/* 실행 중 오버레이 (채팅 영역 하단) */}
+            {isRunning && (
+              <div className="absolute bottom-0 left-0 right-0 flex justify-center pb-3 pointer-events-none z-10">
+                <button
+                  onClick={handleInterrupt}
+                  className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-(--bg-secondary) border border-(--border) shadow-lg text-xs text-(--text-muted) hover:bg-(--bg-tertiary) hover:text-(--text-primary) transition-colors"
+                >
+                  <Loader2 size={12} className="animate-spin" />
+                  <span>Agent is working...</span>
+                  <Square size={10} fill="currentColor" className="text-(--error)" />
+                  <span className="text-(--error)">Stop</span>
+                </button>
+              </div>
+            )}
+          </div>
 
           {/* Approval bar */}
           <ApprovalBar
@@ -670,21 +583,19 @@ export default function App() {
           />
 
           {/* Input + settings */}
-          {viewMode === 'chat' && (
-            <div className="bg-(--bg-primary)">
-              <MessageInput
-                onSend={handleSendMessage}
-                onInterrupt={handleInterrupt}
-                isRunning={isRunning}
-                disabled={!store.activeAgent || ws.status !== 'connected'}
-                inputOptions={currentAgentOptions.filter((o) => o.key === 'model' || o.key === 'effortLevel')}
-                footerOptions={currentAgentOptions.filter((o) => o.key === 'permissionMode' || o.key === 'approvalMode' || o.key === 'sandboxMode' || o.key === 'speedMode')}
-                settingValues={currentAgentSettings}
-                onSettingChange={handleAgentSettingChange}
-                contextUsage={contextUsage}
-              />
-            </div>
-          )}
+          <div className="bg-(--bg-primary)">
+            <MessageInput
+              onSend={handleSendMessage}
+              onInterrupt={handleInterrupt}
+              isRunning={isRunning}
+              disabled={!store.activeAgent || ws.status !== 'connected'}
+              inputOptions={currentAgentOptions.filter((o) => o.key === 'model' || o.key === 'effortLevel')}
+              footerOptions={currentAgentOptions.filter((o) => o.key === 'permissionMode' || o.key === 'approvalMode' || o.key === 'sandboxMode' || o.key === 'speedMode')}
+              settingValues={currentAgentSettings}
+              onSettingChange={handleAgentSettingChange}
+              contextUsage={contextUsage}
+            />
+          </div>
         </div>
       </main>
 
