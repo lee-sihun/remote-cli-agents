@@ -38,15 +38,16 @@ describe('store', () => {
       timestamp: 1,
     };
 
-    store.saveThread('claude', thread);
+    const wsId = 'test-ws';
+    store.saveThread('claude', thread, wsId);
     store.appendMessage(thread.id, message);
 
     const messageFile = join(tempHomeDir, '.rca', 'data', 'messages', `${thread.id}.json`);
     expect(existsSync(messageFile)).toBe(true);
 
-    store.deleteThread('claude', thread.id);
+    store.deleteThread('claude', thread.id, wsId);
 
-    expect(store.loadThreads('claude')).toEqual([]);
+    expect(store.loadThreads('claude', wsId)).toEqual([]);
     expect(store.loadMessages(thread.id)).toEqual([]);
     expect(existsSync(messageFile)).toBe(false);
   });

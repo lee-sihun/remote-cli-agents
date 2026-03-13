@@ -34,18 +34,6 @@ vi.mock('./adapters/codex.js', () => ({
   },
 }));
 
-vi.mock('./adapters/gemini.js', () => ({
-  GeminiAdapter: class extends MockAdapter {
-    constructor() { super('gemini', 'Gemini CLI'); }
-  },
-}));
-
-vi.mock('./adapters/pty.js', () => ({
-  PtyAdapter: class extends MockAdapter {
-    constructor() { super('pty', 'Generic PTY'); }
-  },
-}));
-
 vi.mock('./relay/relay.js', () => ({
   getRelayStats: vi.fn(() => ({})),
   setupRelay: vi.fn(),

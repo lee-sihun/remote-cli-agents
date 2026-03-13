@@ -142,18 +142,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncAgentDefaults, ws.status]);
 
-  // Request threads when agent changes
+  // Request threads when agent or workspace changes
   const prevAgentRef = useRef<AgentType | null>(store.activeAgent);
+  const prevWorkspaceRef = useRef<string | null>(store.activeWorkspace);
   useEffect(() => {
     if (ws.status === 'connected' && store.activeAgent) {
-      // 에이전트가 변경되었을 때만 (동일 에이전트 중복 요청 방지)
-      if (prevAgentRef.current !== store.activeAgent) {
+      const agentChanged = prevAgentRef.current !== store.activeAgent;
+      const wsChanged = prevWorkspaceRef.current !== store.activeWorkspace;
+      if (agentChanged || wsChanged) {
         ws.send({ type: 'list_threads', agentType: store.activeAgent, workspaceId: store.activeWorkspace || undefined });
       }
       prevAgentRef.current = store.activeAgent;
+      prevWorkspaceRef.current = store.activeWorkspace;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws.status, store.activeAgent]);
+  }, [ws.status, store.activeAgent, store.activeWorkspace]);
 
   useEffect(() => {
     if (ws.status === 'disconnected' && ws.reconnectState.exhausted) {
