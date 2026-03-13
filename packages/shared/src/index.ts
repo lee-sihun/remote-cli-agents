@@ -29,6 +29,7 @@ export interface AgentConfig {
   permissionMode?: string;
   approvalMode?: string;
   sandboxMode?: string;
+  workspaceId?: string;
   model?: string;
   effortLevel?: string;
   speedMode?: string;

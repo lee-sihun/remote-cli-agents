@@ -65,6 +65,7 @@ interface ThreadInfo {
   contextUsage?: ContextUsage;
   config?: AgentConfig;
   path?: string;
+  workspaceId?: string;
 }
 
 interface PendingRpcRequest {
@@ -263,16 +264,20 @@ export class CodexAdapter implements AgentAdapter {
     };
   }
 
-  async getThreads(): Promise<ThreadSummary[]> {
-    return Array.from(this.threads.values())
+  async getThreads(workspaceId?: string): Promise<ThreadSummary[]> {
+    let threads = Array.from(this.threads.values());
+    if (workspaceId) {
+      threads = threads.filter((t) => t.workspaceId === workspaceId);
+    }
+    return threads
       .map((thread) => toThreadSummary(thread))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  renameThread(threadId: string, title: string): void {
+  renameThread(threadId: string, title: string, workspaceId?: string): void {
     const thread = this.threads.get(threadId);
     if (!thread) {
-      store.renameThread('codex', threadId, title);
+      store.renameThread('codex', threadId, title, workspaceId || 'default');
       return;
     }
 
@@ -281,7 +286,7 @@ export class CodexAdapter implements AgentAdapter {
     persistThread(thread);
   }
 
-  deleteThread(threadId: string): void {
+  deleteThread(threadId: string, workspaceId?: string): void {
     this.pendingApprovalRequests.forEach((request, toolCallId) => {
       if (request.threadId === threadId) {
         this.pendingApprovalRequests.delete(toolCallId);
@@ -292,8 +297,9 @@ export class CodexAdapter implements AgentAdapter {
     this.accumulatedText.delete(threadId);
     this.currentMessageIds.delete(threadId);
     this.activeToolCalls.delete(threadId);
+    const thread = this.threads.get(threadId);
     this.threads.delete(threadId);
-    store.deleteThread('codex', threadId);
+    store.deleteThread('codex', threadId, workspaceId || thread?.workspaceId || 'default');
 
     if (this.status.activeThread === threadId) {
       this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
@@ -301,20 +307,27 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private restoreStoredThreads(): void {
-    const savedThreads = store.loadThreads('codex');
-    for (const thread of savedThreads) {
-      this.threads.set(thread.id, {
-        id: thread.id,
-        remoteThreadId: thread.remoteThreadId,
-        title: thread.title,
-        messages: store.loadMessages(thread.id),
-        createdAt: thread.createdAt,
-        updatedAt: thread.updatedAt,
-        cwd: thread.cwd,
-        model: thread.model,
-        contextUsage: thread.contextUsage,
-        config: thread.config,
-      });
+    const workspaces = store.loadWorkspaces();
+    // 워크스페이스 없으면 'default'에서만 로드
+    const wsIds = workspaces.length > 0 ? workspaces.map((ws) => ws.id) : ['default'];
+
+    for (const wsId of wsIds) {
+      const savedThreads = store.loadThreads('codex', wsId);
+      for (const thread of savedThreads) {
+        this.threads.set(thread.id, {
+          id: thread.id,
+          remoteThreadId: thread.remoteThreadId,
+          title: thread.title,
+          messages: store.loadMessages(thread.id),
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+          cwd: thread.cwd,
+          model: thread.model,
+          contextUsage: thread.contextUsage,
+          config: thread.config,
+          workspaceId: wsId,
+        });
+      }
     }
   }
 
@@ -1488,6 +1501,7 @@ function toThreadSummary(thread: ThreadInfo): ThreadSummary {
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
     cwd: thread.cwd,
+    workspaceId: thread.workspaceId,
     model: thread.model,
     contextUsage: thread.contextUsage,
     remoteThreadId: thread.remoteThreadId,
@@ -1496,7 +1510,7 @@ function toThreadSummary(thread: ThreadInfo): ThreadSummary {
 }
 
 function persistThread(thread: ThreadInfo): void {
-  store.saveThread('codex', toThreadSummary(thread));
+  store.saveThread('codex', toThreadSummary(thread), thread.workspaceId || 'default');
 }
 
 function summarizeTitle(content: string): string {

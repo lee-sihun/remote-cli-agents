@@ -1,6 +1,6 @@
 import { createServer, type Server as HttpServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { join, extname } from 'node:path';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { join, extname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { randomUUID } from 'node:crypto';
@@ -71,6 +71,9 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
   const { port, cwd, enableRelay } = config;
   const permissionApiToken = randomUUID();
   const permissionBridgeScriptPath = join(__dirname, '..', 'bin', 'claude-permission-bridge.mjs');
+
+  // 레거시 스레드 마이그레이션
+  store.migrateIfNeeded(cwd);
 
   // 에이전트 어댑터 초기화
   const adapters = new Map<AgentType, AgentAdapter>();
@@ -432,7 +435,7 @@ export async function handleClientMessage(
         return;
       }
 
-      const threads = await adapter.getThreads();
+      const threads = await adapter.getThreads(msg.workspaceId);
       sendToClient(ws, {
         type: 'threads_list',
         agentType: msg.agentType,
@@ -529,8 +532,19 @@ export async function handleClientMessage(
         return;
       }
 
+      // 워크스페이스 cwd 주입
+      const sendConfig = { ...msg.config } as AgentConfig;
+      if (msg.workspaceId) {
+        const ws2 = store.getWorkspace(msg.workspaceId);
+        if (ws2) {
+          sendConfig.cwd = ws2.path;
+          sendConfig.workspaceId = ws2.id;
+          store.touchWorkspace(ws2.id);
+        }
+      }
+
       const threadId = msg.threadId || randomUUID();
-      adapter.sendMessage(threadId, msg.content, msg.config);
+      adapter.sendMessage(threadId, msg.content, sendConfig);
       break;
     }
 
@@ -635,6 +649,78 @@ export async function handleClientMessage(
           type: 'error',
           message: err instanceof Error ? err.message : 'Failed to read file',
           code: 'FILE_ERROR',
+        });
+      }
+      break;
+    }
+
+    // ─── 워크스페이스 ───
+
+    case 'list_workspaces': {
+      const workspaces = store.loadWorkspaces();
+      sendToClient(ws, { type: 'workspaces_list', workspaces });
+      break;
+    }
+
+    case 'create_workspace': {
+      try {
+        const workspace = store.createWorkspace(msg.name.trim(), msg.path);
+        sendToClient(ws, { type: 'workspace_created', workspace });
+        // 전체 목록도 전송
+        sendToClient(ws, { type: 'workspaces_list', workspaces: store.loadWorkspaces() });
+      } catch (err) {
+        sendToClient(ws, {
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Failed to create workspace',
+          code: 'WORKSPACE_ERROR',
+        });
+      }
+      break;
+    }
+
+    case 'update_workspace': {
+      const updated = store.updateWorkspace(msg.id, msg.name.trim());
+      if (!updated) {
+        sendToClient(ws, {
+          type: 'error',
+          message: 'Workspace not found',
+          code: 'WORKSPACE_NOT_FOUND',
+        });
+        return;
+      }
+      sendToClient(ws, { type: 'workspaces_list', workspaces: store.loadWorkspaces() });
+      break;
+    }
+
+    case 'delete_workspace': {
+      store.deleteWorkspace(msg.id);
+      sendToClient(ws, { type: 'workspace_deleted', id: msg.id });
+      sendToClient(ws, { type: 'workspaces_list', workspaces: store.loadWorkspaces() });
+      break;
+    }
+
+    case 'browse_directory': {
+      try {
+        const targetPath = resolve(msg.path || '/');
+        const entries = await readdir(targetPath, { withFileTypes: true });
+        const dirs = entries
+          .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((e) => ({
+            name: e.name,
+            path: join(targetPath, e.name),
+          }));
+
+        sendToClient(ws, {
+          type: 'directory_list',
+          path: targetPath,
+          entries: dirs,
+        });
+      } catch (err) {
+        sendToClient(ws, {
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Failed to browse directory',
+          code: 'BROWSE_ERROR',
         });
       }
       break;

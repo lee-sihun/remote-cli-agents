@@ -56,6 +56,7 @@ interface ThreadInfo {
   createdAt: number;
   updatedAt: number;
   cwd?: string;
+  workspaceId?: string;
   timeout?: ReturnType<typeof setTimeout>;
   contextUsage?: ContextUsage;
   config?: AgentConfig;
@@ -108,23 +109,31 @@ export class ClaudeAdapter implements AgentAdapter {
   async start(config: AgentConfig): Promise<void> {
     this.config = config;
 
-    // 저장된 스레드 복원 (프로세스 없이 메타데이터만)
-    const saved = store.loadThreads('claude');
-    for (const t of saved) {
-      if (!this.threads.has(t.id)) {
-        this.threads.set(t.id, {
-          id: t.id,
-          process: null as unknown as ChildProcess,
-          sessionId: t.sessionId,
-          model: t.model,
-          title: t.title,
-          messages: store.loadMessages(t.id),
-          createdAt: t.createdAt,
-          updatedAt: t.updatedAt,
-          cwd: t.cwd,
-          contextUsage: t.contextUsage,
-          config: t.config,
-        });
+    // 저장된 스레드 복원 (모든 워크스페이스에서 로드)
+    const workspaces = store.loadWorkspaces();
+    const workspaceIds = workspaces.length > 0
+      ? workspaces.map((ws) => ws.id)
+      : ['default'];
+
+    for (const wsId of workspaceIds) {
+      const saved = store.loadThreads('claude', wsId);
+      for (const t of saved) {
+        if (!this.threads.has(t.id)) {
+          this.threads.set(t.id, {
+            id: t.id,
+            process: null as unknown as ChildProcess,
+            sessionId: t.sessionId,
+            model: t.model,
+            title: t.title,
+            messages: store.loadMessages(t.id),
+            createdAt: t.createdAt,
+            updatedAt: t.updatedAt,
+            cwd: t.cwd,
+            workspaceId: wsId,
+            contextUsage: t.contextUsage,
+            config: t.config,
+          });
+        }
       }
     }
   }
@@ -283,8 +292,13 @@ export class ClaudeAdapter implements AgentAdapter {
     return this.streamingBuffers.get(threadId) || null;
   }
 
-  async getThreads(): Promise<ThreadSummary[]> {
-    return Array.from(this.threads.values()).map((t) => ({
+  async getThreads(workspaceId?: string): Promise<ThreadSummary[]> {
+    const all = Array.from(this.threads.values());
+    const filtered = workspaceId
+      ? all.filter((t) => (t.workspaceId || 'default') === workspaceId)
+      : all;
+
+    return filtered.map((t) => ({
       id: t.id,
       agentType: 'claude' as const,
       title: t.title,
@@ -295,6 +309,7 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       cwd: t.cwd,
+      workspaceId: t.workspaceId,
       model: t.model,
       sessionId: t.sessionId,
       contextUsage: t.contextUsage,
@@ -302,20 +317,25 @@ export class ClaudeAdapter implements AgentAdapter {
     }));
   }
 
-  renameThread(threadId: string, title: string): void {
+  renameThread(threadId: string, title: string, workspaceId?: string): void {
     const thread = this.threads.get(threadId);
     if (!thread) {
       return;
     }
 
     thread.title = title;
+    if (workspaceId) {
+      thread.workspaceId = workspaceId;
+    }
     this.saveThreadMeta(thread);
   }
 
-  deleteThread(threadId: string): void {
+  deleteThread(threadId: string, workspaceId?: string): void {
     const thread = this.threads.get(threadId);
+    const wsId = workspaceId || thread?.workspaceId || 'default';
+
     if (!thread) {
-      store.deleteThread('claude', threadId);
+      store.deleteThread('claude', threadId, wsId);
       return;
     }
 
@@ -330,7 +350,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     this.streamingBuffers.delete(threadId);
     this.threads.delete(threadId);
-    store.deleteThread('claude', threadId);
+    store.deleteThread('claude', threadId, wsId);
 
     if (this.status.activeThread === threadId) {
       const nextActiveThread = Array.from(this.threads.values()).find((candidate) => this.isProcessActive(candidate.process));
@@ -429,6 +449,7 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: existingThread?.createdAt || now,
       updatedAt: now,
       cwd: cwd || runConfig.cwd,
+      workspaceId: existingThread?.workspaceId,
       contextUsage: existingThread?.contextUsage,
       config: runConfig,
       permissionBridgeConfigPath,
@@ -859,11 +880,12 @@ export class ClaudeAdapter implements AgentAdapter {
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
       cwd: thread.cwd,
+      workspaceId: thread.workspaceId,
       model: thread.model,
       sessionId: thread.sessionId,
       contextUsage: thread.contextUsage,
       config: thread.config,
-    });
+    }, thread.workspaceId || 'default');
   }
 
   private emit(event: AgentEvent): void {
