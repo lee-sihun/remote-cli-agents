@@ -1,3 +1,13 @@
+// ─── Workspace ───
+
+export interface Workspace {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number;
+  lastAccessedAt: number;
+}
+
 // ─── Agent Types ───
 
 export type AgentType = "claude" | "codex";
@@ -198,6 +208,7 @@ export interface ThreadSummary {
   createdAt: number;
   updatedAt: number;
   cwd?: string;
+  workspaceId?: string;
   /** 마지막 응답 모델 */
   model?: string;
   /** 마지막 컨텍스트 사용량 (디스크 저장) */
@@ -266,6 +277,7 @@ export type ClientMessage =
       threadId?: string;
       content: string;
       config?: AgentConfig;
+      workspaceId?: string;
     }
   | { type: "interrupt"; agentType: AgentType; threadId: string }
   | {
@@ -275,7 +287,7 @@ export type ClientMessage =
       toolCallId: string;
       approved: boolean;
     }
-  | { type: "list_threads"; agentType: AgentType }
+  | { type: "list_threads"; agentType: AgentType; workspaceId?: string }
   | {
       type: "rename_thread";
       agentType: AgentType;
@@ -287,6 +299,12 @@ export type ClientMessage =
   | { type: "get_thread_state"; agentType: AgentType; threadId: string }
   | { type: "list_agents" }
   | { type: "select_agent"; agentType: AgentType; config?: AgentConfig }
+  // 워크스페이스
+  | { type: "list_workspaces" }
+  | { type: "create_workspace"; name: string; path: string }
+  | { type: "update_workspace"; id: string; name: string }
+  | { type: "delete_workspace"; id: string }
+  | { type: "browse_directory"; path: string }
   | { type: "git"; action: string; params?: Record<string, unknown> }
   | { type: "file_list"; path: string }
   | { type: "file_read"; path: string }
@@ -310,11 +328,21 @@ export type ServerMessage =
       type: "connection_status";
       status: "connected" | "disconnected" | "reconnecting";
     }
+  // 워크스페이스
+  | { type: "workspaces_list"; workspaces: Workspace[] }
+  | { type: "workspace_created"; workspace: Workspace }
+  | { type: "workspace_deleted"; id: string }
+  | { type: "directory_list"; path: string; entries: DirEntry[] }
   | { type: "git_result"; action: string; result: unknown }
   | { type: "file_list_result"; path: string; entries: FileEntry[] }
   | { type: "file_read_result"; path: string; content: string }
   | { type: "error"; message: string; code?: string }
   | { type: "pong" };
+
+export interface DirEntry {
+  name: string;
+  path: string;
+}
 
 export interface FileEntry {
   name: string;
