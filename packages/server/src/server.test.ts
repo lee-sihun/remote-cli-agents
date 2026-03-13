@@ -392,7 +392,7 @@ describe('server helpers', () => {
       'C:/workspace',
     );
 
-    expect(adapter.sendMessage).toHaveBeenCalledWith('client-thread-id', 'hello', undefined);
+    expect(adapter.sendMessage).toHaveBeenCalledWith('client-thread-id', 'hello', expect.objectContaining({}));
   });
 
   it('passes message-scoped config through to the adapter', async () => {

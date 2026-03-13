@@ -45,6 +45,7 @@ const storeMock = vi.hoisted(() => ({
   }),
   loadMessages: vi.fn((threadId: string) => storeState.messages.get(threadId) || []),
   loadThreads: vi.fn((agentType: string) => storeState.threads.get(agentType) || []),
+  loadWorkspaces: vi.fn(() => []),
   renameThread: vi.fn((agentType: string, threadId: string, title: string) => {
     const threads = [...(storeState.threads.get(agentType) || [])];
     const index = threads.findIndex((thread) => thread.id === threadId);
@@ -322,6 +323,7 @@ describe('CodexAdapter', () => {
           percentage: 12,
         },
       }),
+      expect.any(String),
     );
     expect(storeState.threads.get('codex')).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -756,6 +758,7 @@ describe('CodexAdapter', () => {
         id: 'legacy-local-thread',
         remoteThreadId: 'thread-migrated',
       }),
+      expect.any(String),
     );
   });
 

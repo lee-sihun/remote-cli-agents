@@ -41,6 +41,7 @@ const storeMock = vi.hoisted(() => ({
   }),
   loadMessages: vi.fn((threadId: string) => storeState.messages.get(threadId) || []),
   loadThreads: vi.fn((agentType: string) => storeState.threads.get(agentType) || []),
+  loadWorkspaces: vi.fn(() => []),
   saveMessages: vi.fn((threadId: string, messages: AgentMessage[]) => {
     storeState.messages.set(threadId, [...messages]);
   }),
@@ -501,7 +502,7 @@ describe('ClaudeAdapter', () => {
     expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
       id: 'thread-save-meta',
       messageCount: 1,
-    }));
+    }), expect.any(String));
     expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-save-meta', expect.objectContaining({
       role: 'user',
       content: 'hello',
@@ -520,7 +521,7 @@ describe('ClaudeAdapter', () => {
       sessionId: 'saved-session',
       messageCount: 2,
       lastMessage: 'done',
-    }));
+    }), expect.any(String));
     expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-save-meta', expect.arrayContaining([
       expect.objectContaining({
         role: 'assistant',
@@ -808,7 +809,7 @@ describe('ClaudeAdapter', () => {
       id: 'thread-close',
       messageCount: 2,
       lastMessage: 'partial',
-    }));
+    }), expect.any(String));
     expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-close', expect.arrayContaining([
       expect.objectContaining({
         role: 'assistant',
@@ -847,7 +848,7 @@ describe('ClaudeAdapter', () => {
       id: 'thread-close-error',
       lastMessage: 'partial error output',
       messageCount: 2,
-    }));
+    }), expect.any(String));
   });
 
   it('completes pending tool calls from result even when tool_result is missing', async () => {
