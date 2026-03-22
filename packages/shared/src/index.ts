@@ -100,9 +100,9 @@ export const CODEX_OPTIONS: AgentOptionDef[] = [
     type: "select",
     options: [
       { value: "", label: "Default" },
-      { value: "gpt-5.4", label: "gpt-5.4" },
-      { value: "gpt-5.3-codex", label: "gpt-5.3-codex" },
-      { value: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
+      { value: "gpt-5.4", label: "GPT-5.4" },
+      { value: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
+      { value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
     ],
     defaultValue: "",
   },

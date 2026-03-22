@@ -1187,7 +1187,7 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
     { value: '', label: 'Default' },
     ...models.map((model) => ({
       value: model.model,
-      label: model.displayName,
+      label: formatCodexModelLabel(model.displayName),
     })),
   ];
 
@@ -1489,6 +1489,29 @@ function toCodexModelDescriptor(model: Record<string, unknown>): CodexModelDescr
     defaultReasoningEffort: readString(model, 'defaultReasoningEffort') || DEFAULT_CODEX_REASONING,
     isDefault: Boolean(model.isDefault),
   };
+}
+
+function formatCodexModelLabel(label: string): string {
+  return label
+    .split('-')
+    .map((part) => {
+      const normalized = part.trim();
+      if (!normalized) {
+        return normalized;
+      }
+
+      if (normalized.toLowerCase() === 'gpt') {
+        return 'GPT';
+      }
+
+      if (/^[a-z][a-z0-9]*$/i.test(normalized)) {
+        const lower = normalized.toLowerCase();
+        return lower.charAt(0).toUpperCase() + lower.slice(1);
+      }
+
+      return normalized;
+    })
+    .join('-');
 }
 
 function toThreadSummary(thread: ThreadInfo): ThreadSummary {

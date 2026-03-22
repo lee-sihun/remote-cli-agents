@@ -138,13 +138,29 @@ describe('CodexAdapter', () => {
         proc.stdout.write(`${JSON.stringify({
           id: request.id,
           result: {
-            data: [{
-              model: 'gpt-5.4',
-              displayName: 'gpt-5.4',
-              supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }],
-              defaultReasoningEffort: 'medium',
-              isDefault: true,
-            }],
+            data: [
+              {
+                model: 'gpt-5.4',
+                displayName: 'gpt-5.4',
+                supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }],
+                defaultReasoningEffort: 'medium',
+                isDefault: true,
+              },
+              {
+                model: 'gpt-5.3-codex-spark',
+                displayName: 'GPT-5.3-Codex-Spark',
+                supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+                defaultReasoningEffort: 'medium',
+                isDefault: false,
+              },
+              {
+                model: 'gpt-5.4-mini',
+                displayName: 'gpt-5.4-mini',
+                supportedReasoningEfforts: [{ reasoningEffort: 'medium' }],
+                defaultReasoningEffort: 'medium',
+                isDefault: false,
+              },
+            ],
           },
         })}\n`);
       }
@@ -166,7 +182,9 @@ describe('CodexAdapter', () => {
         expect.objectContaining({
           key: 'model',
           options: expect.arrayContaining([
-            expect.objectContaining({ value: 'gpt-5.4', label: 'gpt-5.4' }),
+            expect.objectContaining({ value: 'gpt-5.4', label: 'GPT-5.4' }),
+            expect.objectContaining({ value: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark' }),
+            expect.objectContaining({ value: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' }),
           ]),
         }),
         expect.objectContaining({ key: 'sandboxMode' }),
