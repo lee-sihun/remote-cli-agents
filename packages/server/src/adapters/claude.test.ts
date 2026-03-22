@@ -25,7 +25,11 @@ class FakeQuery implements AsyncIterable<unknown>, AsyncIterator<unknown> {
   private closed = false;
   private readonly initResult: { models: Array<Record<string, unknown>> };
   private readonly queue: unknown[] = [];
-  private readonly waiters: Array<(result: IteratorResult<unknown>) => void> = [];
+  private failure: unknown;
+  private readonly waiters: Array<{
+    resolve: (result: IteratorResult<unknown>) => void;
+    reject: (error: unknown) => void;
+  }> = [];
 
   constructor(options: FakeQueryOptions = {}) {
     this.initResult = options.initResult || {
@@ -60,6 +64,12 @@ class FakeQuery implements AsyncIterable<unknown>, AsyncIterator<unknown> {
       };
     }
 
+    if (this.failure !== undefined) {
+      const error = this.failure;
+      this.failure = undefined;
+      throw error;
+    }
+
     if (this.closed) {
       return {
         done: true,
@@ -67,15 +77,15 @@ class FakeQuery implements AsyncIterable<unknown>, AsyncIterator<unknown> {
       };
     }
 
-    return new Promise((resolve) => {
-      this.waiters.push(resolve);
+    return new Promise((resolve, reject) => {
+      this.waiters.push({ resolve, reject });
     });
   }
 
   push(message: unknown): void {
     if (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
-      waiter?.({
+      waiter?.resolve({
         done: false,
         value: message,
       });
@@ -83,6 +93,16 @@ class FakeQuery implements AsyncIterable<unknown>, AsyncIterator<unknown> {
     }
 
     this.queue.push(message);
+  }
+
+  fail(error: unknown): void {
+    if (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter?.reject(error);
+      return;
+    }
+
+    this.failure = error;
   }
 
   finish(): void {
@@ -93,7 +113,7 @@ class FakeQuery implements AsyncIterable<unknown>, AsyncIterator<unknown> {
   private flushPendingDone(): void {
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
-      waiter?.({
+      waiter?.resolve({
         done: true,
         value: undefined,
       });
@@ -469,6 +489,37 @@ describe('ClaudeAdapter', () => {
     adapter.interrupt('thread-interrupt');
 
     expect(runtime.interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses abort diagnostics after a user interrupt', async () => {
+    const runtime = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtime);
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-interrupt-noise', 'hello');
+    await flushAsync();
+
+    const runtimeCall = queryMock.mock.calls[1]?.[0];
+    adapter.interrupt('thread-interrupt-noise');
+    runtimeCall?.options?.stderr?.('[ede_diagnostic] result_type=user stop_reason=tool_use Error: Request was aborted.');
+    runtime.fail(new Error('Request was aborted.'));
+    await flushAsync();
+
+    expect(events.filter((event) => event.type === 'error')).toEqual([]);
+    expect(adapter.getStatus().state).toBe('idle');
+    expect(storeState.messages.get('thread-interrupt-noise')).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: 'hello',
+      }),
+    ]);
   });
 
   it('parses SDK partial text, tool activity, result usage, and session metadata', async () => {

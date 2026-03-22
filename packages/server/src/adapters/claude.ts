@@ -105,6 +105,7 @@ export class ClaudeAdapter implements AgentAdapter {
   };
   private streamingBuffers = new Map<string, { content: string; toolCalls: ToolCall[] }>();
   private pendingApprovals = new Map<string, PendingApproval>();
+  private interruptedRuns = new Set<string>();
 
   constructor(options: ClaudeAdapterOptions = {}) {
     this.options = options;
@@ -169,6 +170,10 @@ export class ClaudeAdapter implements AgentAdapter {
     const thread = this.threads.get(threadId);
     if (!thread?.query) {
       return;
+    }
+
+    if (thread.runId) {
+      this.interruptedRuns.add(this.getRunKey(threadId, thread.runId));
     }
 
     void thread.query.interrupt().catch((error) => {
@@ -867,7 +872,7 @@ export class ClaudeAdapter implements AgentAdapter {
       saveThreadMessages();
     };
 
-    const finalizeWithoutResult = () => {
+    const finalizeWithoutResult = (interrupted = false) => {
       this.streamingBuffers.delete(threadId);
       for (const [, tool] of state.pendingToolCalls) {
         emitToolComplete({ ...tool, status: 'abandoned' });
@@ -877,6 +882,11 @@ export class ClaudeAdapter implements AgentAdapter {
 
       if (state.pendingText || state.pendingReasoning) {
         flushTextSegment(state.pendingText, state.resultMeta);
+        return;
+      }
+
+      if (interrupted) {
+        saveThreadMessages();
         return;
       }
 
@@ -935,15 +945,20 @@ export class ClaudeAdapter implements AgentAdapter {
     } catch (error) {
       if (this.isCurrentRun(threadId, runId, sdkQuery)) {
         const message = error instanceof Error ? error.message : String(error);
-        state.stderrEmitted = true;
-        this.emit({
-          type: 'error',
-          threadId,
-          agentType: 'claude',
-          error: message,
-        });
+        if (this.shouldSuppressInterruptedError(threadId, runId, message)) {
+          debugLog(`[claude] Suppressed interrupt error for thread ${threadId}: ${message}`);
+        } else {
+          state.stderrEmitted = true;
+          this.emit({
+            type: 'error',
+            threadId,
+            agentType: 'claude',
+            error: message,
+          });
+        }
       }
     } finally {
+      const wasInterrupted = this.interruptedRuns.delete(this.getRunKey(threadId, runId));
       if (threadInfo.timeout) {
         clearTimeout(threadInfo.timeout);
       }
@@ -952,10 +967,15 @@ export class ClaudeAdapter implements AgentAdapter {
       }
 
       if (!state.resultReceived) {
-        finalizeWithoutResult();
+        finalizeWithoutResult(wasInterrupted);
       }
 
-      this.rejectPendingApprovalsForThread(threadId, 'Claude session ended before the permission request was answered.');
+      this.rejectPendingApprovalsForThread(
+        threadId,
+        wasInterrupted
+          ? 'Claude session was interrupted.'
+          : 'Claude session ended before the permission request was answered.',
+      );
       threadInfo.query = undefined;
       threadInfo.runId = undefined;
       threadInfo.timeout = undefined;
@@ -967,6 +987,18 @@ export class ClaudeAdapter implements AgentAdapter {
         this.updateStatus('idle');
       }
     }
+  }
+
+  private getRunKey(threadId: string, runId: string): string {
+    return `${threadId}:${runId}`;
+  }
+
+  private shouldSuppressInterruptedError(threadId: string, runId: string, message: string): boolean {
+    if (!this.interruptedRuns.has(this.getRunKey(threadId, runId))) {
+      return false;
+    }
+
+    return /request was aborted/i.test(message);
   }
 
   private createPermissionMcpServer(threadId: string) {
@@ -1020,6 +1052,11 @@ export class ClaudeAdapter implements AgentAdapter {
       .filter(Boolean);
 
     for (const line of lines) {
+      if (this.shouldSuppressInterruptedError(threadId, runId, line)) {
+        debugLog(`[claude] Suppressed interrupt stderr for thread ${threadId}: ${line}`);
+        continue;
+      }
+
       debugError('[claude stderr]', line);
       this.emit({
         type: 'error',
