@@ -55,9 +55,19 @@ describe('resolveNewChatSettings', () => {
     )).toEqual({
       model: 'gpt-5.4',
       effortLevel: 'medium',
-      approvalMode: 'on-request',
+      approvalMode: 'never',
       sandboxMode: 'workspace-write',
       speedMode: 'fast',
+    });
+  });
+
+  it('uses the updated Codex UI defaults when no settings exist', () => {
+    expect(resolveNewChatSettings(CODEX_OPTIONS)).toEqual({
+      model: 'gpt-5.4',
+      effortLevel: 'medium',
+      approvalMode: 'never',
+      sandboxMode: 'danger-full-access',
+      speedMode: 'standard',
     });
   });
 });

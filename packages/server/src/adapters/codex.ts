@@ -110,8 +110,8 @@ interface CodexThreadStartResult {
 
 const DEFAULT_CODEX_MODEL = 'gpt-5.4';
 const DEFAULT_CODEX_REASONING = 'medium';
-const DEFAULT_CODEX_SANDBOX = 'workspace-write';
-const DEFAULT_CODEX_APPROVAL = 'on-request';
+const DEFAULT_CODEX_SANDBOX = 'danger-full-access';
+const DEFAULT_CODEX_APPROVAL = 'never';
 const DEFAULT_CODEX_SPEED = 'standard';
 
 export class CodexAdapter implements AgentAdapter {
@@ -1191,7 +1191,10 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
     })),
   ];
 
-  const defaultModel = models.find((model) => model.isDefault)?.model || DEFAULT_CODEX_MODEL;
+  const defaultModel = models.find((model) => model.model === DEFAULT_CODEX_MODEL)?.model
+    || models.find((model) => model.isDefault)?.model
+    || models[0]?.model
+    || DEFAULT_CODEX_MODEL;
   const effortOptions = Array.from(new Map(
     models.flatMap((model) => model.supportedReasoningEfforts).map((effort) => [effort, effort]),
   ).values()).map((effort) => ({
@@ -1205,7 +1208,7 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
       label: 'Model',
       type: 'select',
       options: modelOptions,
-      defaultValue: '',
+      defaultValue: defaultModel,
       description: 'Codex app-server model/list 기준',
     },
     {
@@ -1214,7 +1217,7 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
       type: 'select',
       options: effortOptions,
       defaultValue: models.find((model) => model.model === defaultModel)?.defaultReasoningEffort || DEFAULT_CODEX_REASONING,
-      visibleWhen: effortOptions.length > 0 ? { model: ['', ...models.map((model) => model.model)] } : undefined,
+      visibleWhen: effortOptions.length > 0 ? { model: models.map((model) => model.model) } : undefined,
       description: '선택 모델의 reasoning effort',
     },
     {

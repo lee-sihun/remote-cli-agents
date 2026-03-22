@@ -104,7 +104,7 @@ export const CODEX_OPTIONS: AgentOptionDef[] = [
       { value: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
       { value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
     ],
-    defaultValue: "",
+    defaultValue: "gpt-5.4",
   },
   {
     key: "effortLevel",
@@ -127,7 +127,7 @@ export const CODEX_OPTIONS: AgentOptionDef[] = [
       { value: "untrusted", label: "Untrusted" },
       { value: "never", label: "Never Ask" },
     ],
-    defaultValue: "on-request",
+    defaultValue: "never",
   },
   {
     key: "sandboxMode",
@@ -138,7 +138,7 @@ export const CODEX_OPTIONS: AgentOptionDef[] = [
       { value: "danger-full-access", label: "Full Access" },
       { value: "read-only", label: "Read Only" },
     ],
-    defaultValue: "workspace-write",
+    defaultValue: "danger-full-access",
   },
   {
     key: "speedMode",

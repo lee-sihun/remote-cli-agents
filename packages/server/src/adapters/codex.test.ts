@@ -181,12 +181,15 @@ describe('CodexAdapter', () => {
       expect.arrayContaining([
         expect.objectContaining({
           key: 'model',
+          defaultValue: 'gpt-5.4',
           options: expect.arrayContaining([
             expect.objectContaining({ value: 'gpt-5.4', label: 'GPT-5.4' }),
             expect.objectContaining({ value: 'gpt-5.3-codex-spark', label: 'GPT-5.3-Codex-Spark' }),
             expect.objectContaining({ value: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' }),
           ]),
         }),
+        expect.objectContaining({ key: 'approvalMode', defaultValue: 'never' }),
+        expect.objectContaining({ key: 'sandboxMode', defaultValue: 'danger-full-access' }),
         expect.objectContaining({ key: 'sandboxMode' }),
         expect.objectContaining({ key: 'speedMode' }),
       ]),
