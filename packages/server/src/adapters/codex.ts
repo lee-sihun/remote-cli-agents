@@ -15,6 +15,7 @@ import { CODEX_OPTIONS } from '@rca/shared';
 import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
 import { terminateChildProcess } from '../process.js';
+import { debugLog, debugError } from '../logger.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -185,7 +186,7 @@ export class CodexAdapter implements AgentAdapter {
     const existingThread = this.threads.get(tid);
     const runConfig = this.resolveThreadConfig(existingThread, config);
 
-    console.log(`[codex] Queueing turn for client thread ${tid} ${formatCodexLog({
+    debugLog(`[codex] Queueing turn for client thread ${tid} ${formatCodexLog({
       model: runConfig.model || '',
       approvalMode: runConfig.approvalMode || '',
       sandboxMode: readConfigString(runConfig, 'sandboxMode') || '',
@@ -217,7 +218,7 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     const response = buildApprovalResponse(approval.method, approval.params, approved);
-    console.log(`[codex approval <-] ${approval.method} ${formatCodexLog({
+    debugLog(`[codex approval <-] ${approval.method} ${formatCodexLog({
       threadId,
       toolCallId,
       approved,
@@ -348,7 +349,7 @@ export class CodexAdapter implements AgentAdapter {
 
     if (proc.stderr) {
       proc.stderr.on('data', (chunk: Buffer) => {
-        console.error('[codex stderr]', chunk.toString());
+        debugError('[codex stderr]', chunk.toString());
       });
     }
 
@@ -535,7 +536,7 @@ export class CodexAdapter implements AgentAdapter {
         params,
       };
 
-      console.log(`[codex rpc ->] ${method} ${formatCodexLog(params || {})}`);
+      debugLog(`[codex rpc ->] ${method} ${formatCodexLog(params || {})}`);
 
       const timer = setTimeout(() => {
         const pending = this.pendingRequests.get(id);
@@ -544,7 +545,7 @@ export class CodexAdapter implements AgentAdapter {
         }
 
         this.pendingRequests.delete(id);
-        console.error(`[codex rpc !!] ${method} timeout`);
+        debugError(`[codex rpc !!] ${method} timeout`);
         pending.reject(new Error(`RPC timeout: ${method}`));
       }, 30_000);
 
@@ -589,24 +590,24 @@ export class CodexAdapter implements AgentAdapter {
       this.pendingRequests.delete(parsed.id);
 
       if ('error' in parsed) {
-        console.error(`[codex rpc !!] ${pending.method} ${formatCodexLog(parsed.error)}`);
+        debugError(`[codex rpc !!] ${pending.method} ${formatCodexLog(parsed.error)}`);
         pending.reject(new Error(parsed.error.message));
       } else {
-        console.log(`[codex rpc <-] ${pending.method} ${formatCodexLog(parsed.result)}`);
+        debugLog(`[codex rpc <-] ${pending.method} ${formatCodexLog(parsed.result)}`);
         pending.resolve(parsed.result);
       }
       return;
     }
 
     if ('id' in parsed && typeof parsed.id === 'number' && 'method' in parsed) {
-      console.log(`[codex approval ->] ${parsed.method} ${formatCodexLog(parsed.params || {})}`);
+      debugLog(`[codex approval ->] ${parsed.method} ${formatCodexLog(parsed.params || {})}`);
       this.handleServerRequest(parsed);
       return;
     }
 
     if ('method' in parsed) {
       if (shouldLogCodexNotification(parsed.method)) {
-        console.log(`[codex event] ${parsed.method} ${formatCodexLog(parsed.params || {})}`);
+        debugLog(`[codex event] ${parsed.method} ${formatCodexLog(parsed.params || {})}`);
       }
       this.handleNotification(parsed.method, parsed.params || {});
     }

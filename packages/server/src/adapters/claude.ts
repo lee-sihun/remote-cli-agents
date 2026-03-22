@@ -16,6 +16,7 @@ import type {
 import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
 import { terminateChildProcess } from '../process.js';
+import { debugLog, debugError } from '../logger.js';
 
 // Claude stream-json 이벤트 타입
 interface ClaudeStreamEvent {
@@ -166,7 +167,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     // 기존 프로세스가 실행 중이면 종료 후 재시작
     if (existingThread && this.isProcessActive(existingThread.process)) {
-      console.log(`[claude] Killing existing process for thread ${tid} before new message`);
+      debugLog(`[claude] Killing existing process for thread ${tid} before new message`);
       if (existingThread.timeout) clearTimeout(existingThread.timeout);
       this.rejectPendingApprovalsForThread(tid, 'Claude session restarted before the permission request was answered.');
       this.cleanupPermissionBridgeConfig(existingThread);
@@ -184,10 +185,10 @@ export class ClaudeAdapter implements AgentAdapter {
     const threadConfig = this.resolveThreadConfig(existingThread, config);
 
     if (existingThread?.sessionId) {
-      console.log(`[claude] Resuming session ${existingThread.sessionId} for thread ${tid}`);
+      debugLog(`[claude] Resuming session ${existingThread.sessionId} for thread ${tid}`);
       this.spawnClaude(tid, message, threadConfig, existingThread.sessionId, existingThread.cwd);
     } else {
-      console.log(`[claude] Starting new session for thread ${tid}`);
+      debugLog(`[claude] Starting new session for thread ${tid}`);
       this.spawnClaude(tid, message, threadConfig, undefined, threadConfig.cwd);
     }
   }
@@ -575,11 +576,11 @@ export class ClaudeAdapter implements AgentAdapter {
         try {
           event = JSON.parse(trimmed);
         } catch {
-          console.log('[claude stdout] (non-JSON)', trimmed.slice(0, 200));
+          debugLog('[claude stdout] (non-JSON)', trimmed.slice(0, 200));
           return;
         }
 
-        console.log('[claude event]', event.type, event.subtype || '', JSON.stringify(event).slice(0, 300));
+        debugLog('[claude event]', event.type, event.subtype || '', JSON.stringify(event).slice(0, 300));
 
         threadInfo.updatedAt = Date.now();
 
@@ -682,7 +683,7 @@ export class ClaudeAdapter implements AgentAdapter {
             // 세션 ID 저장 (재연결용)
             if (event.session_id) {
               threadInfo.sessionId = event.session_id;
-              console.log(`[claude] Session ID saved: ${event.session_id} for thread ${threadId}`);
+              debugLog(`[claude] Session ID saved: ${event.session_id} for thread ${threadId}`);
             }
 
             if (event.model) {
@@ -771,7 +772,7 @@ export class ClaudeAdapter implements AgentAdapter {
       stderrBuffer = '';
       if (!text) return;
       if (!this.isCurrentRun(threadId, runId, proc)) return;
-      console.error('[claude stderr]', text);
+      debugError('[claude stderr]', text);
       stderrEmitted = true;
       this.emit({
         type: 'error',
@@ -790,7 +791,7 @@ export class ClaudeAdapter implements AgentAdapter {
           const text = line.trim();
           if (!text) continue;
           if (!this.isCurrentRun(threadId, runId, proc)) return;
-          console.error('[claude stderr]', text);
+          debugError('[claude stderr]', text);
           stderrEmitted = true;
           this.emit({
             type: 'error',
