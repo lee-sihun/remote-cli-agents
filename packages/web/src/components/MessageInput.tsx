@@ -105,6 +105,7 @@ const MessageInput = ({
   const [value, setValue] = useState('');
   const [focused, setFocused] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
+  const isComposingRef = useRef(false);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
@@ -118,6 +119,10 @@ const MessageInput = ({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) {
+        return;
+      }
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         if (isRunning) return;
@@ -136,6 +141,16 @@ const MessageInput = ({
     e.preventDefault();
     const text = e.clipboardData.getData('text/plain');
     document.execCommand('insertText', false, text);
+  }, []);
+
+  const handleCompositionStart = useCallback(() => {
+    isComposingRef.current = true;
+  }, []);
+
+  const handleCompositionEnd = useCallback(() => {
+    isComposingRef.current = false;
+    const text = editorRef.current?.textContent || '';
+    setValue(text);
   }, []);
 
   // visibleWhen 조건 평가
@@ -177,6 +192,8 @@ const MessageInput = ({
               aria-placeholder={isRunning ? 'Agent is working...' : 'Send a message...'}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
               onPaste={handlePaste}
               className="w-full px-4 pt-3 pb-2 text-sm text-(--text-primary) outline-none overflow-y-auto empty:before:content-[attr(aria-placeholder)] empty:before:text-(--text-muted) empty:before:pointer-events-none"
               style={{ maxHeight: '400px', minHeight: '1.5em', wordBreak: 'break-word' }}
