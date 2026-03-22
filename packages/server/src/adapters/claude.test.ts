@@ -508,7 +508,11 @@ describe('ClaudeAdapter', () => {
 
     const runtimeCall = queryMock.mock.calls[1]?.[0];
     adapter.interrupt('thread-interrupt-noise');
-    runtimeCall?.options?.stderr?.('[ede_diagnostic] result_type=user stop_reason=tool_use Error: Request was aborted.');
+    runtimeCall?.options?.stderr?.([
+      '[ede_diagnostic] result_type=user stop_reason=tool_use Error: Request was aborted.',
+      'at HI.makeRequest (file:///tmp/cli.js:313:3940)',
+      'at process.processTicksAndRejections (node:internal/process/task_queues:103:5)',
+    ].join('\n'));
     runtime.fail(new Error('Request was aborted.'));
     await flushAsync();
 
@@ -520,6 +524,38 @@ describe('ClaudeAdapter', () => {
         content: 'hello',
       }),
     ]);
+  });
+
+  it('suppresses aborted result errors after a user interrupt', async () => {
+    const runtime = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtime);
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-interrupt-result', 'hello');
+    await flushAsync();
+
+    adapter.interrupt('thread-interrupt-result');
+    runtime.push(createResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      stop_reason: null,
+      errors: [
+        '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null Error: Request was aborted.',
+        'at HI.makeRequest (file:///tmp/cli.js:313:3940)',
+      ],
+    }));
+    runtime.finish();
+    await flushAsync();
+
+    expect(events.filter((event) => event.type === 'error')).toEqual([]);
+    expect(adapter.getStatus().state).toBe('idle');
   });
 
   it('parses SDK partial text, tool activity, result usage, and session metadata', async () => {

@@ -811,12 +811,18 @@ export class ClaudeAdapter implements AgentAdapter {
       state.resultReceived = true;
 
       if (sdkMessage.subtype !== 'success' && sdkMessage.errors.length > 0) {
-        this.emit({
-          type: 'error',
-          threadId,
-          agentType: 'claude',
-          error: sdkMessage.errors.join('\n'),
-        });
+        const visibleErrors = sdkMessage.errors.filter(
+          (error) => !this.shouldSuppressInterruptedError(threadId, runId, error),
+        );
+
+        if (visibleErrors.length > 0) {
+          this.emit({
+            type: 'error',
+            threadId,
+            agentType: 'claude',
+            error: visibleErrors.join('\n'),
+          });
+        }
       }
 
       state.resultMeta.costUsd = sdkMessage.total_cost_usd;
@@ -998,7 +1004,7 @@ export class ClaudeAdapter implements AgentAdapter {
       return false;
     }
 
-    return /request was aborted/i.test(message);
+    return /request was aborted|ede_diagnostic|makeRequest|processTicksAndRejections/i.test(message);
   }
 
   private createPermissionMcpServer(threadId: string) {
