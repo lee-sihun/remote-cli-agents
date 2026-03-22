@@ -556,10 +556,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           }
 
           case 'status_change': {
+            const previousStatus = state.agentStatuses.get(event.agentType);
             const statuses = new Map(state.agentStatuses);
             statuses.set(event.agentType, event.status);
             const threads = new Map(state.threads);
             const activeThreadId = event.status.activeThread;
+            const updates: Partial<AgentState> = {
+              agentStatuses: statuses,
+              threads,
+            };
+
             if (activeThreadId) {
               const agentThreads = [...(threads.get(event.agentType) || [])];
               const threadIndex = agentThreads.findIndex((thread) => thread.id === activeThreadId);
@@ -573,7 +579,26 @@ export const useAgentStore = create<AgentState>((set, get) => ({
                 threads.set(event.agentType, updated);
               }
             }
-            set({ agentStatuses: statuses, threads });
+
+            const wasRunningThread = previousStatus?.activeThread;
+            const isStopped = event.status.state !== 'running' && event.status.state !== 'waiting_approval';
+            if (wasRunningThread && isStopped) {
+              const streamingContent = new Map(state.streamingContent);
+              streamingContent.delete(wasRunningThread);
+
+              const activeToolCalls = new Map(state.activeToolCalls);
+              activeToolCalls.delete(wasRunningThread);
+
+              const pendingApprovals = state.pendingApprovals.filter(
+                (approval) => approval.threadId !== wasRunningThread,
+              );
+
+              updates.streamingContent = streamingContent;
+              updates.activeToolCalls = activeToolCalls;
+              updates.pendingApprovals = pendingApprovals;
+            }
+
+            set(updates);
             break;
           }
 

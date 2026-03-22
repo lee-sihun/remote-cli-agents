@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentStatus, ToolCall } from '../lib/protocol';
+import type { AgentStatus, AgentType, ToolCall } from '../lib/protocol';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -365,6 +365,47 @@ describe('useAgentStore', () => {
     expect(useAgentStore.getState().pendingApprovals).toHaveLength(0);
     expect(useAgentStore.getState().agentStatuses.size).toBe(0);
   });
+
+  it.each(['claude', 'codex'] as AgentType[])(
+    'clears stale streaming state when %s transitions from running to idle',
+    async (agentType) => {
+      const { useAgentStore } = await import('./useAgent.ts');
+
+      useAgentStore.setState({
+        streamingContent: new Map([['thread-1', 'partial response']]),
+        activeToolCalls: new Map([['thread-1', [baseToolCall]]]),
+        pendingApprovals: [{
+          ...baseToolCall,
+          status: 'requires_approval',
+          threadId: 'thread-1',
+          agentType,
+        }],
+        agentStatuses: new Map([[agentType, {
+          agent: agentType,
+          state: 'running',
+          activeThread: 'thread-1',
+        }]]),
+      });
+
+      useAgentStore.getState().processServerMessage({
+        type: 'agent_event',
+        event: {
+          type: 'status_change',
+          agentType,
+          status: {
+            agent: agentType,
+            state: 'idle',
+          },
+        },
+      });
+
+      expect(useAgentStore.getState().streamingContent.has('thread-1')).toBe(false);
+      expect(useAgentStore.getState().activeToolCalls.has('thread-1')).toBe(false);
+      expect(
+        useAgentStore.getState().pendingApprovals.some((approval) => approval.threadId === 'thread-1'),
+      ).toBe(false);
+    },
+  );
 
   it('keeps streaming content isolated by thread while another thread is active', async () => {
     const { useAgentStore } = await import('./useAgent.ts');
