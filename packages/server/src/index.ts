@@ -224,9 +224,6 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   console.log('  Scan this QR code to connect:');
   await printQR(payload);
 
-  console.log(`  Or open: ${payload.directUrl}`);
-  console.log('');
-
   // 종료 처리
   const shutdown = async () => {
     console.log('\n  Shutting down...');

@@ -18,10 +18,11 @@ export async function printQR(payload: QRPayload): Promise<void> {
     return;
   }
 
-  const json = JSON.stringify(payload);
+  // URL만 인코딩 → QR 크기 최소화 (스캔 시 브라우저에서 /api/connection 자동 연결)
+  const qrData = payload.directUrl;
 
   return new Promise<void>((resolve) => {
-    qrterm.generate(json, { small: true }, (qrString: string) => {
+    qrterm.generate(qrData, { small: true }, (qrString: string) => {
       console.log('');
       console.log(qrString);
       console.log('');
