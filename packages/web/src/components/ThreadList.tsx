@@ -151,7 +151,16 @@ export default function ThreadList({
             {displayThreads.map((thread) => (
               <div
                 key={thread.id}
-                className={`w-full text-left p-3 rounded-lg transition-colors ${
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelectThread(thread.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectThread(thread.id);
+                  }
+                }}
+                className={`w-full cursor-default text-left p-3 rounded-lg transition-colors ${
                   thread.id === activeThread
                     ? 'bg-(--bg-tertiary)'
                     : 'hover:bg-(--bg-tertiary)/50'
@@ -159,15 +168,6 @@ export default function ThreadList({
               >
                 <div className="flex items-start gap-2">
                   <div
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onSelectThread(thread.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        onSelectThread(thread.id);
-                      }
-                    }}
                     className="flex flex-1 items-start gap-2 min-w-0 text-left"
                   >
                     <span
@@ -177,7 +177,7 @@ export default function ThreadList({
                           : 'bg-(--border)'
                       }`}
                     />
-                    <div className="flex-1 min-w-0">
+                    <div className="flex-1 min-w-0 cursor-default">
                       {editingThreadId === thread.id ? (
                         <div
                           className="flex items-center gap-1"
@@ -231,13 +231,13 @@ export default function ThreadList({
                               {agentLabel(thread.agentType)}
                             </span>
                           )}
-                          <span className="text-sm font-medium truncate flex-1">
+                          <span className="flex-1 cursor-default truncate text-sm font-medium">
                             {thread.title}
                           </span>
                         </div>
                       )}
                       {thread.lastMessage && editingThreadId !== thread.id && (
-                        <p className="text-xs text-(--text-muted) truncate">
+                        <p className="cursor-default truncate text-xs text-(--text-muted)">
                           {thread.lastMessage}
                         </p>
                       )}
