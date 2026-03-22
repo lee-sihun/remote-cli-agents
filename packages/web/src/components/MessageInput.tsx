@@ -104,8 +104,36 @@ const MessageInput = ({
 }: MessageInputProps) => {
   const [value, setValue] = useState('');
   const [focused, setFocused] = useState(false);
+  const [isMobileComposer, setIsMobileComposer] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
   const isComposingRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return;
+    }
+
+    // 모바일 터치 화면에서는 Enter를 줄바꿈으로 유지
+    const mediaQuery = window.matchMedia('(max-width: 768px) and (pointer: coarse)');
+    const syncMobileComposer = () => {
+      setIsMobileComposer(mediaQuery.matches);
+    };
+
+    syncMobileComposer();
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', syncMobileComposer);
+    } else {
+      mediaQuery.addListener(syncMobileComposer);
+    }
+
+    return () => {
+      if (typeof mediaQuery.removeEventListener === 'function') {
+        mediaQuery.removeEventListener('change', syncMobileComposer);
+      } else {
+        mediaQuery.removeListener(syncMobileComposer);
+      }
+    };
+  }, []);
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
@@ -123,13 +151,15 @@ const MessageInput = ({
         return;
       }
 
-      if (e.key === 'Enter' && !e.shiftKey) {
+      const shouldSendWithEnter = !isMobileComposer || e.ctrlKey || e.metaKey;
+
+      if (e.key === 'Enter' && !e.shiftKey && shouldSendWithEnter) {
         e.preventDefault();
         if (isRunning) return;
         handleSend();
       }
     },
-    [handleSend, isRunning],
+    [handleSend, isMobileComposer, isRunning],
   );
 
   const handleInput = useCallback(() => {
