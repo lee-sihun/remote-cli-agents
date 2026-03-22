@@ -221,7 +221,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     const origin = `${protocol}//${hostname}${port ? ':' + port : ''}`;
     const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:';
     const wsBase = `${wsProtocol}//${hostname}${port ? ':' + port : ''}/ws`;
-    const isViteDevServer = port === '9471';
+    const isViteDevServer = import.meta.env.DEV;
 
     fetch(`${origin}/api/connection`)
       .then((res) => res.ok ? res.json() : null)

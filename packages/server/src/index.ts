@@ -6,8 +6,22 @@ import { sessionManager } from './session.js';
 import { printQR } from './qr.js';
 import { startQuickTunnel } from './tunnel.js';
 
+const DEFAULT_PORT = 9470;
+
+function parsePort(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseFlag(value: string | undefined, fallback = false): boolean {
+  if (!value) return fallback;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
 // CLI 인자 파싱
-function parseArgs(argv: string[]): {
+export function parseArgs(argv: string[], env: NodeJS.ProcessEnv = process.env): {
   port: number;
   relay: string | null;
   noRelay: boolean;
@@ -15,11 +29,11 @@ function parseArgs(argv: string[]): {
   cwd: string;
   command: string;
 } {
-  let port = 9470;
-  let relay: string | null = null;
-  let noRelay = false;
-  let noTunnel = false;
-  let cwd = process.cwd();
+  let port = parsePort(env.RCA_PORT || env.PORT, DEFAULT_PORT);
+  let relay: string | null = env.RCA_RELAY_URL || null;
+  let noRelay = parseFlag(env.RCA_NO_RELAY);
+  let noTunnel = parseFlag(env.RCA_NO_TUNNEL);
+  let cwd = env.RCA_CWD || process.cwd();
   let command = 'up';
 
   for (let i = 2; i < argv.length; i++) {
@@ -197,9 +211,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
 
   // Quick Tunnel 시작
   // --relay 지정 시 터널 스킵, --no-relay / --no-tunnel 도 스킵
-  // CLOUDFLARE_TUNNEL_URL 환경변수로 정식 터널 URL 직접 지정 가능
+  // RCA_TUNNEL_URL 또는 CLOUDFLARE_TUNNEL_URL 환경변수로 정식 터널 URL 직접 지정 가능
   let tunnelCleanup: (() => void) | null = null;
-  const envTunnelUrl = process.env.CLOUDFLARE_TUNNEL_URL;
+  const envTunnelUrl = process.env.RCA_TUNNEL_URL || process.env.CLOUDFLARE_TUNNEL_URL;
 
   if (envTunnelUrl && !args.relay && !args.noRelay && !args.noTunnel) {
     payload.directUrl = envTunnelUrl;

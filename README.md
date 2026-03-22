@@ -77,6 +77,9 @@ npm install
 # 개발 서버 시작 (서버 + 웹 클라이언트 동시 실행)
 npm run dev
 
+# 개발 서버 + 빌드 서버 동시 실행
+npm run dev:dual
+
 # Codex 런타임 스모크 테스트
 npm run test:codex
 
@@ -91,6 +94,50 @@ npm run test:pinchtab:codex
 ```bash
 npm run build   # 전체 빌드
 npm start       # 프로덕션 서버 시작 (포트 9470)
+
+# 빌드 서버를 9570 포트에서 로컬 전용 실행
+npm run start:prod:local
+
+# 빌드 서버를 9570 포트에서 터널 포함 실행
+npm run start:prod:tunnel
+```
+
+포트와 연결 대상은 환경변수로 분리할 수 있습니다.
+
+```bash
+# 앱 서버 포트 변경
+RCA_PORT=9570 npm start
+
+# 웹 개발 서버 포트 변경
+RCA_WEB_PORT=9571 npm run dev:web
+
+# 웹 개발 서버가 바라볼 앱 서버 변경
+RCA_SERVER_PORT=9570 npm run dev:web
+
+# 앱 서버 전체 URL 직접 지정
+RCA_SERVER_URL=http://127.0.0.1:9570 npm run dev:web
+
+# 터널 자동 생성 비활성화
+RCA_NO_TUNNEL=1 npm start
+```
+
+자주 쓰는 실행 스크립트는 다음과 같습니다.
+
+```bash
+# 개발 서버 스택
+npm run dev
+
+# 개발 서버 + 빌드 서버(9570, 터널 없음)
+npm run dev:dual
+
+# 빌드 서버만 별도 실행
+npm run start:prod:local
+
+# 빌드 서버를 터널 포함으로 실행
+npm run start:prod:tunnel
+
+# dev 웹을 빌드 서버(9570)에 붙여서 확인
+npm run dev:web:prod-target
 ```
 
 ### CLI 직접 실행
@@ -116,6 +163,8 @@ rca
 ```bash
 rca --relay wss://your-relay-server.com
 ```
+
+고정 터널 주소를 인스턴스별로 다르게 쓰려면 `RCA_TUNNEL_URL`을 사용하세요. 기존 `CLOUDFLARE_TUNNEL_URL`도 계속 지원합니다.
 
 ## 데이터 저장 위치
 
