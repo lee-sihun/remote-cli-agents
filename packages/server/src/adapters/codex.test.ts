@@ -905,6 +905,123 @@ describe('CodexAdapter', () => {
     });
   });
 
+  it('preserves refreshed Codex context usage when usage updates arrive between compaction start and completion', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+
+    wireCodexRpc(proc, (request) => {
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-compact-interleaved',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-compact-interleaved',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-compact-interleaved', 'continue', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-compact-interleaved',
+        turn: {
+          id: 'turn-compact-interleaved',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-compact-interleaved',
+        turnId: 'turn-compact-interleaved',
+        tokenUsage: {
+          total: { totalTokens: 900 },
+          modelContextWindow: 1000,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-compact-interleaved',
+        item: { id: 'compact-3', type: 'contextCompaction' },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-compact-interleaved',
+        turnId: 'turn-compact-interleaved',
+        tokenUsage: {
+          total: { totalTokens: 220 },
+          modelContextWindow: 1000,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-compact-interleaved',
+        item: { id: 'compact-3', type: 'contextCompaction' },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-compact-interleaved',
+        turn: {
+          id: 'turn-compact-interleaved',
+          status: 'completed',
+          error: null,
+        },
+      },
+    })}\n`);
+
+    await flushStreamEvents();
+
+    const threads = await adapter.getThreads();
+    expect(threads[0]?.contextUsage).toEqual({
+      used: 220,
+      total: 1000,
+      percentage: 22,
+    });
+  });
+
   it('resumes stored threads before sending and uses the active turn id for interrupts', async () => {
     storeState.threads.set('codex', [{
       id: 'client-thread-resume',

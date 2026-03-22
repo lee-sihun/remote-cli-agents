@@ -69,7 +69,9 @@ interface ThreadInfo {
   cwd?: string;
   model?: string;
   contextUsage?: ContextUsage;
+  contextUsageRevision?: number;
   awaitingPostCompactionUsageRefresh?: boolean;
+  compactionStartUsageRevision?: number;
   config?: AgentConfig;
   path?: string;
   workspaceId?: string;
@@ -772,6 +774,7 @@ export class CodexAdapter implements AgentAdapter {
 
         const thread = this.threads.get(threadId);
         if (thread) {
+          thread.contextUsageRevision = (thread.contextUsageRevision || 0) + 1;
           thread.contextUsage = usage;
           thread.awaitingPostCompactionUsageRefresh = false;
           persistThread(thread);
@@ -888,6 +891,11 @@ export class CodexAdapter implements AgentAdapter {
       return;
     }
 
+    if (item.type === 'contextCompaction') {
+      this.markThreadContextCompactionStarted(threadId);
+      return;
+    }
+
     if (item.type === 'agentMessage') {
       const itemId = readString(item, 'id');
       const currentMessageId = this.currentMessageIds.get(threadId);
@@ -919,7 +927,7 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     if (item.type === 'contextCompaction') {
-      this.markThreadContextCompacted(threadId);
+      this.handleThreadContextCompactionCompleted(threadId);
       return;
     }
 
@@ -1079,9 +1087,25 @@ export class CodexAdapter implements AgentAdapter {
     this.emitStatusChange();
   }
 
-  private markThreadContextCompacted(threadId: string): void {
+  private markThreadContextCompactionStarted(threadId: string): void {
     const thread = this.threads.get(threadId);
     if (!thread) {
+      return;
+    }
+
+    thread.compactionStartUsageRevision = thread.contextUsageRevision || 0;
+  }
+
+  private handleThreadContextCompactionCompleted(threadId: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      return;
+    }
+
+    const usageRevisionAtStart = thread.compactionStartUsageRevision ?? thread.contextUsageRevision ?? 0;
+    thread.compactionStartUsageRevision = undefined;
+    if ((thread.contextUsageRevision || 0) > usageRevisionAtStart) {
+      thread.awaitingPostCompactionUsageRefresh = false;
       return;
     }
 
