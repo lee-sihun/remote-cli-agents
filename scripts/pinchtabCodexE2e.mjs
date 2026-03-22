@@ -397,7 +397,7 @@ async function main() {
   appUrl = `http://127.0.0.1:${appPort}/`;
   pinchtabUrl = `http://127.0.0.1:${pinchtabPort}`;
 
-  const appServer = startProcess('app', 'node', ['packages/server/dist/index.js', '--port', String(appPort), '--no-relay']);
+  const appServer = startProcess('app', 'node', ['packages/server/dist/index.js', '--port', String(appPort), '--no-tunnel']);
   const pinchServer = startProcess('pinchtab', 'pinchtab', [], {
     PINCHTAB_PORT: String(pinchtabPort),
     PINCHTAB_HEADLESS: 'true',

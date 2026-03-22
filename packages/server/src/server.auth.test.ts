@@ -34,11 +34,6 @@ vi.mock('./adapters/codex.js', () => ({
   },
 }));
 
-vi.mock('./relay/relay.js', () => ({
-  getRelayStats: vi.fn(() => ({})),
-  setupRelay: vi.fn(),
-}));
-
 vi.mock('./handlers/git.js', () => ({
   handleGit: vi.fn(),
 }));
@@ -58,7 +53,6 @@ describe('WebSocket token validation', () => {
     server = await createBridgeServer({
       port: 0,
       cwd: process.cwd(),
-      enableRelay: false,
     });
     port = (server.httpServer.address() as AddressInfo).port;
   });

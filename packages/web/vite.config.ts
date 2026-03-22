@@ -63,10 +63,6 @@ export default defineConfig(() => {
           target: wsTarget,
           ws: true,
         },
-        '/relay': {
-          target: wsTarget,
-          ws: true,
-        },
       },
     },
   };

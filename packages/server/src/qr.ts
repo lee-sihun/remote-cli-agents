@@ -37,11 +37,6 @@ function printSessionInfo(payload: QRPayload): void {
   console.log('─'.repeat(50));
   console.log(`  Session ID : ${payload.sessionId}`);
   console.log(`  Direct URL : ${payload.directUrl}`);
-
-  if (payload.relay) {
-    console.log(`  Relay      : ${payload.relay}`);
-  }
-
   console.log(`  Token      : ${payload.token.slice(0, 8)}...`);
   console.log('─'.repeat(50));
   console.log('');

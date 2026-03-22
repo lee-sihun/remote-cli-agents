@@ -7,7 +7,7 @@ CLI 코딩 에이전트(Claude Code, Codex, Gemini CLI)를 웹 브라우저로 �
 ## 주요 기능
 
 - **다중 에이전트 지원** — Claude Code, Codex, Gemini CLI, 범용 PTY 터미널
-- **원격 접속** — LAN 직접 연결 또는 릴레이 서버를 통한 인터넷 접속
+- **원격 접속** — Cloudflare 터널 또는 LAN 직접 연결
 - **QR 코드 페어링** — 브라우저에서 QR 코드 스캔으로 즉시 연결
 - **구조화된 채팅 UI** — 마크다운 렌더링, 코드 하이라이팅, 툴 호출 시각화
 - **승인 워크플로우** — 권한이 필요한 작업의 승인/거부 처리
@@ -35,7 +35,7 @@ CLI 코딩 에이전트(Claude Code, Codex, Gemini CLI)를 웹 브라우저로 �
   └─ 웹 클라이언트 (PWA, React 19 + xterm.js)
        └─ WebSocket
             ├─ LAN 모드: ws://192.168.x.x:9470
-            └─ 릴레이 모드: wss://relay.example.com
+            └─ 터널 모드: wss://<random>.trycloudflare.com/ws
 
 로컬 개발 PC
   └─ Bridge 서버 (Node.js + ws)
@@ -156,13 +156,9 @@ rca
 
 서버와 클라이언트가 같은 네트워크에 있을 때 사용. 서버 시작 시 터미널에 출력되는 로컬 IP 주소와 QR 코드로 연결합니다.
 
-### 릴레이 모드
+### 터널 모드
 
-인터넷을 통한 원격 접속이 필요할 때 사용. 세션 기반 인증(sessionId + token)으로 보안을 유지합니다.
-
-```bash
-rca --relay wss://your-relay-server.com
-```
+인터넷을 통한 원격 접속이 필요할 때 사용. 서버가 시작되면 Cloudflare Quick Tunnel을 자동으로 시도하고, 성공 시 해당 HTTPS 주소로 연결합니다. 실패하면 LAN 직접 연결로 돌아갑니다.
 
 고정 터널 주소를 인스턴스별로 다르게 쓰려면 `RCA_TUNNEL_URL`을 사용하세요. 기존 `CLOUDFLARE_TUNNEL_URL`도 계속 지원합니다.
 

@@ -668,10 +668,6 @@ export default function App() {
           autoOpenedConnectionModal.current = false;
           ws.reconnect();
         }}
-        onConnectDirect={(url) => {
-          autoOpenedConnectionModal.current = false;
-          ws.connectDirect(url);
-        }}
       />
 
       {/* Side panels */}

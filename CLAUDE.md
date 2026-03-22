@@ -5,9 +5,9 @@ CLI 코딩 에이전트(Claude Code, Codex, Gemini CLI)를 웹 브라우저로 �
 ## 아키텍처
 
 - Monorepo: `packages/shared`, `packages/server`, `packages/web`
-- Server: Node.js + ws + node-pty, Bridge 서버 + Relay 서버
+- Server: Node.js + ws + node-pty 기반 Bridge 서버
 - Web Client: React 19 + Vite + Tailwind CSS v4 + xterm.js (PWA)
-- Connection: WebSocket relay (Remodex 패턴) + LAN 직접 연결
+- Connection: Cloudflare 터널 + LAN 직접 연결
 - Agent Adapters: Claude Code (stream-json), Codex (JSON-RPC), Gemini/Generic (PTY)
 
 ## 주요 명령어
@@ -23,7 +23,7 @@ npm start             # 프로덕션 서버 시작
 
 - 의존성 최소화
 - node-pty는 선택적 (동적 import + try-catch)
-- 모든 에이전트 CLI 실행은 로컬에서만, 릴레이는 메시지 전달만
+- 모든 에이전트 CLI 실행은 로컬에서만 수행
 - 시크릿/토큰은 코드에 포함하지 않음 - 런타임 생성
 - 모바일 우선 반응형 디자인
 

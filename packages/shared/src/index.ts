@@ -358,12 +358,7 @@ export interface FileEntry {
 export interface QRPayload {
   type: "rca";
   version: number;
-  relay?: string;
   sessionId: string;
   directUrl: string;
   token: string;
 }
-
-// ─── Relay Roles ───
-
-export type RelayRole = "host" | "client";

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// CLI 진입점 - rca up / rca relay
+// CLI 진입점 - rca
 // tsx가 있으면 TypeScript 직접 실행, 없으면 빌드된 dist 사용
 
 import { existsSync } from 'node:fs';

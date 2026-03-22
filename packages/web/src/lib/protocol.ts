@@ -19,7 +19,6 @@ export type {
   DirEntry,
   Workspace,
   QRPayload,
-  RelayRole,
 } from '@rca/shared';
 
 // Runtime helpers
@@ -47,15 +46,6 @@ export function parseQRPayload(input: string): import('@rca/shared').QRPayload |
 }
 
 export function buildWebSocketUrl(payload: import('@rca/shared').QRPayload): string {
-  if (payload.relay) {
-    // relay를 통한 연결
-    const url = new URL(payload.relay);
-    url.searchParams.set('session', payload.sessionId);
-    url.searchParams.set('token', payload.token);
-    url.searchParams.set('role', 'client');
-    return url.toString();
-  }
-  // 직접 연결 (http/https → ws/wss 변환, /ws 경로)
   const base = new URL(payload.directUrl);
   const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = new URL(`${wsProtocol}//${base.host}/ws`);

@@ -19,19 +19,19 @@ export default function StatusBar({
     connected: {
       icon: Wifi,
       textColor: 'text-(--success)',
-      label: 'Connected',
+      label: '서버 연결됨',
     },
     connecting: {
       icon: Loader2,
       textColor: 'text-(--warning)',
       label: reconnectState.attempt > 0
-        ? `Reconnecting... ${reconnectState.attempt}/${reconnectState.maxAttempts}`
-        : 'Reconnecting...',
+        ? `재연결 중 ${reconnectState.attempt}/${reconnectState.maxAttempts}`
+        : '서버 연결 중',
     },
     disconnected: {
       icon: WifiOff,
       textColor: 'text-(--error)',
-      label: 'Disconnected',
+      label: '연결 끊김',
     },
   };
 
@@ -42,7 +42,7 @@ export default function StatusBar({
     <button
       onClick={onSettingsClick}
       className={`flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-(--bg-tertiary) transition-colors text-sm ${className}`}
-      title="Connection settings"
+      title="서버 연결 상태"
     >
       <Icon
         size={14}

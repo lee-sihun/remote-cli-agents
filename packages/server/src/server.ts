@@ -16,7 +16,6 @@ import { AGENT_OPTIONS } from '@rca/shared';
 import type { AgentAdapter } from './adapters/types.js';
 import { ClaudeAdapter } from './adapters/claude.js';
 import { CodexAdapter } from './adapters/codex.js';
-import { setupRelay, getRelayStats } from './relay/relay.js';
 import * as store from './store.js';
 import { sessionManager } from './session.js';
 import { handleGit } from './handlers/git.js';
@@ -48,8 +47,6 @@ export type ClientMessageParseResult =
 export interface ServerConfig {
   port: number;
   cwd: string;
-  enableRelay: boolean;
-  relayUrl?: string;
   connectionPayload?: import('@rca/shared').QRPayload;
 }
 
@@ -57,7 +54,6 @@ export interface ServerConfig {
 export interface ServerInstance {
   httpServer: HttpServer;
   wss: WebSocketServer;
-  relayWss?: WebSocketServer;
   adapters: Map<AgentType, AgentAdapter>;
   close: () => Promise<void>;
 }
@@ -68,7 +64,7 @@ const __dirname = typeof import.meta.url !== 'undefined'
   : process.cwd();
 
 export async function createBridgeServer(config: ServerConfig): Promise<ServerInstance> {
-  const { port, cwd, enableRelay } = config;
+  const { port, cwd } = config;
   const permissionApiToken = randomUUID();
   const permissionBridgeScriptPath = join(__dirname, '..', 'bin', 'claude-permission-bridge.mjs');
 
@@ -116,12 +112,6 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
     if (url === '/api/connection' && config.connectionPayload) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(config.connectionPayload));
-      return;
-    }
-
-    if (url === '/api/relay-stats' && enableRelay) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(getRelayStats()));
       return;
     }
 
@@ -185,22 +175,11 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
   // WebSocket 서버 (클라이언트 연결용)
   const wss = new WebSocketServer({ noServer: true });
 
-  // 릴레이용 WebSocket 서버 (별도 경로)
-  let relayWss: WebSocketServer | undefined;
-  if (enableRelay) {
-    relayWss = new WebSocketServer({ noServer: true });
-    setupRelay(relayWss);
-  }
-
   // HTTP 업그레이드 핸들링 (WS 경로 분리)
   httpServer.on('upgrade', (request, socket, head) => {
     const url = request.url || '/';
 
-    if (url.startsWith('/relay') && relayWss) {
-      relayWss.handleUpgrade(request, socket, head, (ws) => {
-        relayWss!.emit('connection', ws, request);
-      });
-    } else if (url.startsWith('/ws') || url === '/') {
+    if (url.startsWith('/ws') || url === '/') {
       // 토큰 검증 (세션이 있는 경우)
       const params = new URL(url, `http://${request.headers.host}`).searchParams;
       const token = params.get('token') || (request.headers['x-token'] as string);
@@ -287,7 +266,6 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
   return {
     httpServer,
     wss,
-    relayWss,
     adapters,
     close: async () => {
       // 모든 어댑터 종료
@@ -297,7 +275,6 @@ export async function createBridgeServer(config: ServerConfig): Promise<ServerIn
 
       // WebSocket 서버 종료
       wss.close();
-      relayWss?.close();
 
       // HTTP 서버 종료
       await new Promise<void>((resolve, reject) => {
