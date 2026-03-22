@@ -2,8 +2,6 @@ import React, { useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  User,
-  Bot,
   AlertCircle,
   ChevronDown,
   ChevronRight,
@@ -142,19 +140,6 @@ function MessageBubble({ message }: { message: AgentMessage }) {
           <div className="bg-(--user-bubble) text-(--user-bubble-text) rounded-2xl rounded-br-md px-4 py-2.5">
             <p className="text-sm whitespace-pre-wrap">{message.content}</p>
           </div>
-          <div className="text-right mt-1">
-            <span className="text-xs text-(--text-muted)">
-              {new Date(message.timestamp).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </span>
-          </div>
-        </div>
-        <div className="shrink-0 ml-2 flex items-start">
-          <div className="w-7 h-7 rounded-full bg-(--user-bubble) flex items-center justify-center">
-            <User size={14} className="text-white" />
-          </div>
         </div>
       </div>
     );
@@ -175,13 +160,8 @@ function MessageBubble({ message }: { message: AgentMessage }) {
 
   // Assistant message
   return (
-    <div className="flex justify-start mb-4 animate-slide-left">
-      <div className="shrink-0 mr-2 flex items-start">
-        <div className="w-7 h-7 rounded-full bg-(--accent) flex items-center justify-center">
-          <Bot size={14} className="text-white" />
-        </div>
-      </div>
-      <div className="max-w-[85%] sm:max-w-[70%] min-w-0">
+    <div className="mb-4 animate-slide-left">
+      <div className="min-w-0">
         {message.reasoning && <ReasoningBlock content={message.reasoning} />}
 
         {message.toolCalls?.map((tool) => (
@@ -189,7 +169,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
         ))}
 
         {message.content && (
-          <div className="bg-(--assistant-bubble) text-(--assistant-bubble-text) rounded-2xl rounded-bl-md px-4 py-2.5">
+          <div className="text-(--assistant-bubble-text) px-4 py-2.5">
             <div className="markdown-content text-sm">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -220,15 +200,6 @@ function MessageBubble({ message }: { message: AgentMessage }) {
             </div>
           </div>
         )}
-
-        <div className="mt-1">
-          <span className="text-xs text-(--text-muted)">
-            {new Date(message.timestamp).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </span>
-        </div>
       </div>
     </div>
   );
@@ -238,14 +209,8 @@ function MessageBubble({ message }: { message: AgentMessage }) {
 
 function StreamingBubble({ content, toolCalls }: { content: string; toolCalls?: ToolCall[] }) {
   return (
-    <div className="flex justify-start mb-4">
-      <div className="shrink-0 mr-2 flex items-start">
-        <div className="w-7 h-7 rounded-full bg-(--accent) flex items-center justify-center">
-          <Bot size={14} className="text-white" />
-        </div>
-      </div>
-      <div className="max-w-[85%] sm:max-w-[70%] min-w-0">
-        {/* 스트리밍 중 tool calls */}
+    <div className="mb-4">
+      <div className="min-w-0">
         {toolCalls && toolCalls.length > 0 && (
           <div className="mb-1">
             {toolCalls.map((tool) => (
@@ -254,7 +219,7 @@ function StreamingBubble({ content, toolCalls }: { content: string; toolCalls?: 
           </div>
         )}
 
-        <div className="bg-(--assistant-bubble) text-(--assistant-bubble-text) rounded-2xl rounded-bl-md px-4 py-2.5">
+        <div className="text-(--assistant-bubble-text) px-4 py-2.5">
           {content ? (
             <div className="markdown-content text-sm">
               <ReactMarkdown
