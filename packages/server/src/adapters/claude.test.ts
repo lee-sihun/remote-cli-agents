@@ -558,6 +558,67 @@ describe('ClaudeAdapter', () => {
     expect(adapter.getStatus().state).toBe('idle');
   });
 
+  it('marks active Claude tools as abandoned after a user interrupt', async () => {
+    const runtime = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtime);
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-interrupt-tool', 'hello');
+    await flushAsync();
+
+    runtime.push(createToolStart());
+    await flushAsync();
+
+    adapter.interrupt('thread-interrupt-tool');
+    runtime.fail(new Error('Request was aborted.'));
+    await flushAsync();
+
+    const toolEvents = events.filter((event): event is Extract<AgentEvent, { type: 'tool_start' | 'tool_complete' }> => (
+      event.type === 'tool_start' || event.type === 'tool_complete'
+    ));
+    expect(toolEvents).toEqual([
+      {
+        type: 'tool_start',
+        threadId: 'thread-interrupt-tool',
+        agentType: 'claude',
+        tool: {
+          id: 'tool-1',
+          name: 'Edit',
+          input: { file_path: 'a.ts' },
+          status: 'running',
+        },
+      },
+      {
+        type: 'tool_complete',
+        threadId: 'thread-interrupt-tool',
+        agentType: 'claude',
+        tool: {
+          id: 'tool-1',
+          name: 'Edit',
+          input: { file_path: 'a.ts' },
+          status: 'abandoned',
+        },
+      },
+    ]);
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed.at(-1)?.message.toolCalls?.[0]).toEqual({
+      id: 'tool-1',
+      name: 'Edit',
+      input: { file_path: 'a.ts' },
+      status: 'abandoned',
+    });
+  });
+
   it('parses SDK partial text, tool activity, result usage, and session metadata', async () => {
     const probe = new FakeQuery();
     const runtime = new FakeQuery();

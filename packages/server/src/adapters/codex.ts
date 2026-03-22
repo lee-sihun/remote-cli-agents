@@ -993,6 +993,7 @@ export class CodexAdapter implements AgentAdapter {
 
     if (thread) {
       this.flushAssistantText(threadId);
+      this.abandonActiveTools(threadId);
       if (thread.awaitingPostCompactionUsageRefresh) {
         thread.awaitingPostCompactionUsageRefresh = false;
         if (thread.contextUsage) {
@@ -1006,6 +1007,29 @@ export class CodexAdapter implements AgentAdapter {
     this.currentMessageIds.delete(threadId);
     this.activeToolCalls.delete(threadId);
     this.updateStatus(this.activeTurns.size > 0 ? 'running' : 'idle', this.currentActiveThread());
+  }
+
+  private abandonActiveTools(threadId: string): void {
+    const active = this.activeToolCalls.get(threadId);
+    if (!active || active.size === 0) {
+      return;
+    }
+
+    for (const [toolId, tool] of active.entries()) {
+      const abandonedTool: ToolCall = {
+        ...tool,
+        status: 'abandoned',
+      };
+
+      this.pendingApprovalRequests.delete(toolId);
+      this.upsertToolMessage(threadId, abandonedTool);
+      this.emit({
+        type: 'tool_complete',
+        threadId,
+        agentType: 'codex',
+        tool: abandonedTool,
+      });
+    }
   }
 
   private flushAssistantText(threadId: string): void {

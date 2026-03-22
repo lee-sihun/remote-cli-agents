@@ -1343,6 +1343,245 @@ describe('CodexAdapter', () => {
     }));
   });
 
+  it('marks active Codex tools as abandoned when an interrupted turn completes', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+
+    wireCodexRpc(proc, (request) => {
+      requests.push({ method: request.method, params: request.params });
+
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-interrupt-tool',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-interrupt-tool',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/interrupt') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new CodexAdapter();
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-interrupt-tool', 'run tool', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-interrupt-tool',
+        turn: {
+          id: 'turn-interrupt-tool',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-interrupt-tool',
+        item: {
+          id: 'tool-interrupt',
+          type: 'collabAgentToolCall',
+          tool: 'spawnAgent',
+          prompt: 'inspect cwd',
+          model: 'gpt-5.4',
+          reasoningEffort: 'medium',
+          senderThreadId: 'thread-interrupt-tool',
+          receiverThreadIds: ['worker-1'],
+          agentsStates: [],
+          status: 'inProgress',
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    adapter.interrupt('thread-interrupt-tool');
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-interrupt-tool',
+        turn: {
+          id: 'turn-interrupt-tool',
+          status: 'cancelled',
+          error: null,
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    expect(requests.find((request) => request.method === 'turn/interrupt')?.params).toEqual({
+      threadId: 'thread-interrupt-tool',
+      turnId: 'turn-interrupt-tool',
+    });
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed.at(-1)?.message.toolCalls?.[0]).toMatchObject({
+      id: 'tool-interrupt',
+      name: 'subagent:spawnAgent',
+      status: 'abandoned',
+    });
+
+    const toolComplete = events.filter((event): event is Extract<AgentEvent, { type: 'tool_complete' }> => (
+      event.type === 'tool_complete'
+    ));
+    expect(toolComplete.at(-1)?.tool).toMatchObject({
+      id: 'tool-interrupt',
+      status: 'abandoned',
+    });
+  });
+
+  it('marks running Codex command tools as abandoned when an interrupted turn completes', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+
+    wireCodexRpc(proc, (request) => {
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-interrupt-command',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-interrupt-command',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/interrupt') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new CodexAdapter();
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-interrupt-command', 'run command', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-interrupt-command',
+        turn: {
+          id: 'turn-interrupt-command',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-interrupt-command',
+        item: {
+          id: 'tool-command',
+          type: 'commandExecution',
+          command: 'npm test',
+          cwd: 'C:/workspace',
+          status: 'inProgress',
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    adapter.interrupt('thread-interrupt-command');
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-interrupt-command',
+        turn: {
+          id: 'turn-interrupt-command',
+          status: 'cancelled',
+          error: null,
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed.at(-1)?.message.toolCalls?.[0]).toMatchObject({
+      id: 'tool-command',
+      name: 'commandExecution',
+      status: 'abandoned',
+    });
+
+    const toolComplete = events.filter((event): event is Extract<AgentEvent, { type: 'tool_complete' }> => (
+      event.type === 'tool_complete'
+    ));
+    expect(toolComplete.at(-1)?.tool).toMatchObject({
+      id: 'tool-command',
+      status: 'abandoned',
+    });
+  });
+
   it('starts a fresh Codex thread for legacy stored threads without a remote thread id', async () => {
     storeState.threads.set('codex', [{
       id: 'legacy-local-thread',
@@ -1623,5 +1862,122 @@ describe('CodexAdapter', () => {
     adapter.approve('thread-approval', 'cmd-1', true);
 
     expect(writes.some((entry) => entry.includes('"id":91') && entry.includes('"decision":"approved"'))).toBe(true);
+  });
+
+  it('marks approval-waiting Codex tools as abandoned after interrupt', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const writes: string[] = [];
+
+    wireCodexRpc(proc, (request) => {
+      writes.push(JSON.stringify(request));
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-approval-interrupt',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-approval-interrupt',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/interrupt') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    const events: AgentEvent[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-approval-interrupt', 'run something', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-approval-interrupt',
+        turn: {
+          id: 'turn-approval-interrupt',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      id: 92,
+      method: 'item/commandExecution/requestApproval',
+      params: {
+        threadId: 'thread-approval-interrupt',
+        itemId: 'cmd-interrupt',
+        command: 'npm test',
+        cwd: 'C:/workspace',
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    adapter.interrupt('thread-approval-interrupt');
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-approval-interrupt',
+        turn: {
+          id: 'turn-approval-interrupt',
+          status: 'cancelled',
+          error: null,
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed.at(-1)?.message.toolCalls?.[0]).toMatchObject({
+      id: 'cmd-interrupt',
+      name: 'commandExecution',
+      status: 'abandoned',
+    });
+
+    const toolComplete = events.filter((event): event is Extract<AgentEvent, { type: 'tool_complete' }> => (
+      event.type === 'tool_complete'
+    ));
+    expect(toolComplete.at(-1)?.tool).toMatchObject({
+      id: 'cmd-interrupt',
+      status: 'abandoned',
+    });
+
+    adapter.approve('thread-approval-interrupt', 'cmd-interrupt', true);
+    expect(writes.some((entry) => entry.includes('"id":92') && entry.includes('"decision":"approved"'))).toBe(false);
   });
 });
