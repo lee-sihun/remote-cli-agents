@@ -5,9 +5,10 @@ interface GitDiffViewerProps {
   diff: string | null;
   loading: boolean;
   onBack: () => void;
+  subtitle?: string;
+  emptyMessage?: string;
 }
 
-// unified diff 한 줄 파싱
 function DiffLine({ line }: { line: string }) {
   if (line.startsWith('+++') || line.startsWith('---')) {
     return (
@@ -44,17 +45,23 @@ function DiffLine({ line }: { line: string }) {
   );
 }
 
-const GitDiffViewer = ({ filePath, diff, loading, onBack }: GitDiffViewerProps) => {
+const GitDiffViewer = ({
+  filePath,
+  diff,
+  loading,
+  onBack,
+  subtitle,
+  emptyMessage = 'No changes to show',
+}: GitDiffViewerProps) => {
   const fileName = filePath.split('/').at(-1) ?? filePath;
 
   return (
     <div className="flex flex-col h-full">
-      {/* diff 뷰어 헤더 */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-(--border) shrink-0">
         <button
           onClick={onBack}
           className="p-1 rounded hover:bg-(--bg-tertiary) transition-colors"
-          title="뒤로가기"
+          title="Back"
         >
           <ChevronLeft size={16} className="text-(--text-muted)" />
         </button>
@@ -62,18 +69,17 @@ const GitDiffViewer = ({ filePath, diff, loading, onBack }: GitDiffViewerProps) 
           <p className="text-xs font-mono font-medium truncate text-(--text-primary)">
             {fileName}
           </p>
-          <p className="text-xs text-(--text-muted) truncate">{filePath}</p>
+          <p className="text-xs text-(--text-muted) truncate">{subtitle ?? filePath}</p>
         </div>
       </div>
 
-      {/* diff 내용 */}
       <div className="flex-1 overflow-y-auto scroll-hover-area">
         {loading ? (
           <div className="flex items-center justify-center h-20">
             <Loader2 size={16} className="animate-spin text-(--text-muted)" />
           </div>
         ) : !diff ? (
-          <p className="text-xs text-(--text-muted) px-4 py-4">변경사항 없음</p>
+          <p className="text-xs text-(--text-muted) px-4 py-4">{emptyMessage}</p>
         ) : (
           <div>
             {diff.split('\n').map((line, i) => (

@@ -18,6 +18,8 @@ const ALLOWED_ACTIONS = new Set([
   'status',
   'log',
   'diff',
+  'commit_files',
+  'commit_diff',
   'commit',
   'push',
   'pull',
@@ -47,6 +49,10 @@ export async function handleGit(
         return await gitLog(cwd, params);
       case 'diff':
         return await gitDiff(cwd, params);
+      case 'commit_files':
+        return await gitCommitFiles(cwd, params);
+      case 'commit_diff':
+        return await gitCommitDiff(cwd, params);
       case 'commit':
         return await gitCommit(cwd, params);
       case 'push':
@@ -195,14 +201,15 @@ async function gitLog(
   params: Record<string, unknown>,
 ): Promise<GitResult> {
   const count = typeof params.count === 'number' ? params.count : 20;
+  const skip = typeof params.skip === 'number' ? params.skip : 0;
   const format = '%H|%h|%an|%ae|%at|%s';
 
   const output = await execGit(
-    ['log', `--format=${format}`, `-n`, String(count)],
+    ['log', `--format=${format}`, '--skip', String(skip), '-n', String(count + 1)],
     { cwd },
   );
 
-  const commits = output
+  const rawCommits = output
     .trim()
     .split('\n')
     .filter(Boolean)
@@ -218,7 +225,16 @@ async function gitLog(
       };
     });
 
-  return { success: true, data: { commits } };
+  const commits = rawCommits.slice(0, count);
+
+  return {
+    success: true,
+    data: {
+      commits,
+      hasMore: rawCommits.length > count,
+      nextSkip: skip + commits.length,
+    },
+  };
 }
 
 async function gitDiff(
@@ -247,6 +263,95 @@ async function gitDiff(
 
   const output = await execGit(args, { cwd });
   return { success: true, data: { diff: output, file, staged } };
+}
+
+function parseNameStatusLine(line: string) {
+  const parts = line.split('\t');
+  const statusCode = parts[0] ?? 'M';
+
+  if (statusCode.startsWith('R')) {
+    return {
+      path: parts[1] ?? '',
+      nextPath: parts[2] ?? parts[1] ?? '',
+      status: 'renamed',
+    };
+  }
+
+  const statusMap: Record<string, string> = {
+    A: 'added',
+    D: 'deleted',
+    M: 'modified',
+  };
+
+  return {
+    path: parts[1] ?? '',
+    status: statusMap[statusCode] ?? 'modified',
+  };
+}
+
+async function gitCommitFiles(
+  cwd: string,
+  params: Record<string, unknown>,
+): Promise<GitResult> {
+  const hash = typeof params.hash === 'string' ? params.hash : '';
+  if (!hash) {
+    return { success: false, error: 'Commit hash is required' };
+  }
+
+  const summaryFormat = '%H|%h|%an|%ae|%at|%s';
+  const summaryOutput = await execGit(
+    ['show', '--stat=0', `--format=${summaryFormat}`, '--name-status', hash],
+    { cwd },
+  );
+
+  const lines = summaryOutput.split('\n').filter(Boolean);
+  const summaryLine = lines.shift() ?? '';
+  const [commitHash, shortHash, author, email, timestamp, subject] = summaryLine.split('|');
+
+  const files = lines
+    .map(parseNameStatusLine)
+    .filter((file) => file.path);
+
+  return {
+    success: true,
+    data: {
+      commit: {
+        hash: commitHash,
+        shortHash,
+        author,
+        email,
+        timestamp: parseInt(timestamp, 10) * 1000,
+        subject,
+      },
+      files,
+    },
+  };
+}
+
+async function gitCommitDiff(
+  cwd: string,
+  params: Record<string, unknown>,
+): Promise<GitResult> {
+  const hash = typeof params.hash === 'string' ? params.hash : '';
+  const file = typeof params.file === 'string' ? params.file : '';
+
+  if (!hash || !file) {
+    return { success: false, error: 'Commit hash and file path are required' };
+  }
+
+  const output = await execGit(
+    ['show', '--format=', hash, '--', file],
+    { cwd, maxBuffer: 1024 * 1024 * 10 },
+  );
+
+  return {
+    success: true,
+    data: {
+      hash,
+      file,
+      diff: output,
+    },
+  };
 }
 
 // untracked 파일 여부 확인

@@ -38,14 +38,13 @@ const GitBranchPicker = ({ branches, currentBranch, loading, onSelect, onClose }
   );
 
   return (
-    // 배경 클릭 시 닫기
     <div
       className="absolute inset-0 z-10 bg-(--bg-primary) flex flex-col"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="px-3 py-2 border-b border-(--border) shrink-0">
         <p className="text-xs font-semibold text-(--text-muted) uppercase tracking-wider">
-          브랜치 전환
+          Switch Branch
         </p>
       </div>
 
@@ -56,21 +55,19 @@ const GitBranchPicker = ({ branches, currentBranch, loading, onSelect, onClose }
           </div>
         ) : (
           <>
-            {/* 로컬 브랜치 */}
             {localBranches.length > 0 && (
               <div>
                 <p className="text-xs text-(--text-muted) px-3 pt-3 pb-1 uppercase tracking-wider font-medium">
-                  로컬
+                  Local
                 </p>
                 {localBranches.map(renderBranch)}
               </div>
             )}
 
-            {/* 원격 브랜치 */}
             {remoteBranches.length > 0 && (
               <div>
                 <p className="text-xs text-(--text-muted) px-3 pt-3 pb-1 uppercase tracking-wider font-medium">
-                  원격
+                  Remote
                 </p>
                 {remoteBranches.map(renderBranch)}
               </div>
@@ -78,7 +75,7 @@ const GitBranchPicker = ({ branches, currentBranch, loading, onSelect, onClose }
 
             {branches.length === 0 && (
               <p className="text-xs text-(--text-muted) px-3 py-4">
-                브랜치 없음
+                No branches found
               </p>
             )}
           </>
@@ -87,7 +84,7 @@ const GitBranchPicker = ({ branches, currentBranch, loading, onSelect, onClose }
 
       <div className="p-3 border-t border-(--border) shrink-0">
         <p className="text-xs text-(--text-muted) text-center">
-          현재: <span className="font-mono text-(--text-primary)">{currentBranch}</span>
+          Current: <span className="font-mono text-(--text-primary)">{currentBranch}</span>
         </p>
       </div>
     </div>

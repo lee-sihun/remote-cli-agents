@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   GitBranch,
   GitCommit,
+  GitGraph,
   Upload,
   Download,
   RefreshCw,
@@ -60,12 +61,54 @@ interface BranchesResult {
   _error?: string;
 }
 
+interface LogCommit {
+  hash: string;
+  shortHash: string;
+  author: string;
+  email: string;
+  timestamp: number;
+  subject: string;
+}
+
+interface LogResult {
+  commits?: LogCommit[];
+  hasMore?: boolean;
+  nextSkip?: number;
+  _error?: string;
+}
+
 interface SelectedFile {
   path: string;
   staged: boolean;
 }
 
-// status/checkout/stage/unstage/commit 이후 자동 갱신
+interface CommitFile {
+  path: string;
+  nextPath?: string;
+  status: string;
+}
+
+interface CommitFilesResult {
+  commit?: LogCommit;
+  files?: CommitFile[];
+  _error?: string;
+}
+
+interface CommitDiffResult {
+  hash?: string;
+  file?: string;
+  diff?: string;
+  _error?: string;
+}
+
+interface SelectedCommitDiff {
+  hash: string;
+  file: string;
+}
+
+type GitTab = 'changes' | 'history';
+
+const HISTORY_PAGE_SIZE = 30;
 const REFRESH_AFTER = new Set(['commit', 'stage', 'unstage', 'checkout', 'pull', 'push']);
 
 function fileStatusIcon(status: string) {
@@ -85,13 +128,14 @@ function fileStatusIcon(status: string) {
 
 function statusBadge(status: string) {
   const map: Record<string, { label: string; cls: string }> = {
-    added:     { label: 'A', cls: 'text-(--success) bg-(--success)/10' },
-    deleted:   { label: 'D', cls: 'text-(--error) bg-(--error)/10' },
-    modified:  { label: 'M', cls: 'text-(--warning) bg-(--warning)/10' },
-    renamed:   { label: 'R', cls: 'text-sky-500 bg-sky-500/10' },
+    added: { label: 'A', cls: 'text-(--success) bg-(--success)/10' },
+    deleted: { label: 'D', cls: 'text-(--error) bg-(--error)/10' },
+    modified: { label: 'M', cls: 'text-(--warning) bg-(--warning)/10' },
+    renamed: { label: 'R', cls: 'text-sky-500 bg-sky-500/10' },
     untracked: { label: 'U', cls: 'text-(--text-muted) bg-(--bg-tertiary)' },
   };
   const { label, cls } = map[status] ?? { label: '?', cls: 'text-(--text-muted)' };
+
   return (
     <span className={`text-[10px] font-bold px-1 py-0.5 rounded ${cls}`}>
       {label}
@@ -99,58 +143,148 @@ function statusBadge(status: string) {
   );
 }
 
+function formatCommitDate(timestamp: number) {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(timestamp);
+}
+
 export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanelProps) {
   const [commitMessage, setCommitMessage] = useState('');
   const [loading, setLoading] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
+  const [selectedCommit, setSelectedCommit] = useState<LogCommit | null>(null);
+  const [selectedCommitDiff, setSelectedCommitDiff] = useState<SelectedCommitDiff | null>(null);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
+  const [activeTab, setActiveTab] = useState<GitTab>('changes');
   const [stagedOpen, setStagedOpen] = useState(true);
   const [changesOpen, setChangesOpen] = useState(true);
+  const [historyItems, setHistoryItems] = useState<LogCommit[]>([]);
+  const [historySkip, setHistorySkip] = useState(0);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
 
   const pendingRefreshRef = useRef<{ action: string; prev: unknown } | null>(null);
+  const historyLoadMoreRef = useRef(false);
 
   const gitStatus = gitResults.get('status') as GitStatus | undefined;
   const diffResult = gitResults.get('diff') as DiffResult | undefined;
   const branchesResult = gitResults.get('branches') as BranchesResult | undefined;
+  const logResult = gitResults.get('log') as LogResult | undefined;
+  const commitFilesResult = gitResults.get('commit_files') as CommitFilesResult | undefined;
+  const commitDiffResult = gitResults.get('commit_diff') as CommitDiffResult | undefined;
 
-  // 선택된 파일의 diff가 맞는지 확인 (stale 방지)
   const isDiffMatch =
     diffResult &&
     !diffResult._error &&
     diffResult.file === selectedFile?.path &&
     diffResult.staged === selectedFile?.staged;
 
+  const isCommitDiffMatch =
+    commitDiffResult &&
+    !commitDiffResult._error &&
+    commitDiffResult.hash === selectedCommitDiff?.hash &&
+    commitDiffResult.file === selectedCommitDiff?.file;
+
   const requestStatus = useCallback(() => {
+    setLoading('status');
     onSend({ type: 'git', action: 'status' });
   }, [onSend]);
 
   const requestBranches = useCallback(() => {
+    setLoading('branches');
     onSend({ type: 'git', action: 'branches' });
+  }, [onSend]);
+
+  const requestLog = useCallback((skip = 0) => {
+    setLoading('log');
+    onSend({ type: 'git', action: 'log', params: { count: HISTORY_PAGE_SIZE, skip } });
+  }, [onSend]);
+
+  const requestCommitFiles = useCallback((hash: string) => {
+    setLoading('commit_files');
+    onSend({ type: 'git', action: 'commit_files', params: { hash } });
+  }, [onSend]);
+
+  const requestCommitDiff = useCallback((hash: string, file: string) => {
+    setLoading('commit_diff');
+    onSend({ type: 'git', action: 'commit_diff', params: { hash, file } });
   }, [onSend]);
 
   useEffect(() => {
     if (open) {
       requestStatus();
+      if (activeTab === 'history') {
+        historyLoadMoreRef.current = false;
+        requestLog(0);
+      }
     }
-  }, [open, requestStatus]);
+  }, [activeTab, open, requestLog, requestStatus]);
 
-  // 브랜치 피커 열릴 때 목록 조회
+  useEffect(() => {
+    if (!open) {
+      setSelectedFile(null);
+      setSelectedCommit(null);
+      setSelectedCommitDiff(null);
+      setActiveTab('changes');
+      setHistoryItems([]);
+      setHistorySkip(0);
+      setHistoryHasMore(false);
+    }
+  }, [open]);
+
   useEffect(() => {
     if (showBranchPicker) {
       requestBranches();
     }
   }, [showBranchPicker, requestBranches]);
 
-  // 결과 도착 → 로딩 해제 + 쓰기 액션 후 status 자동 갱신
   useEffect(() => {
-    setLoading(null);
+    if (!logResult) return;
+    const commits = logResult.commits ?? [];
+
+    setHistoryItems((prev) => {
+      if (!historyLoadMoreRef.current) return commits;
+
+      const seen = new Set(prev.map((commit) => commit.hash));
+      return [...prev, ...commits.filter((commit) => !seen.has(commit.hash))];
+    });
+
+    setHistoryHasMore(Boolean(logResult.hasMore));
+    setHistorySkip(logResult.nextSkip ?? commits.length);
+    historyLoadMoreRef.current = false;
+  }, [logResult]);
+
+  useEffect(() => {
     const pending = pendingRefreshRef.current;
-    if (!pending) return;
+    if (!pending) {
+      setLoading((prev) => (prev === 'status' || prev === 'log' || prev === 'branches' ? null : prev));
+      return;
+    }
+
     const next = gitResults.get(pending.action);
     if (next === undefined || Object.is(next, pending.prev)) return;
     pendingRefreshRef.current = null;
+    setLoading(null);
     requestStatus();
   }, [gitResults, requestStatus]);
+
+  useEffect(() => {
+    if (loading === null) return;
+
+    if (
+      (loading === 'status' && gitResults.get('status') !== undefined) ||
+      (loading === 'log' && gitResults.get('log') !== undefined) ||
+      (loading === 'branches' && gitResults.get('branches') !== undefined) ||
+      (loading === 'diff' && gitResults.get('diff') !== undefined) ||
+      (loading === 'commit_files' && gitResults.get('commit_files') !== undefined) ||
+      (loading === 'commit_diff' && gitResults.get('commit_diff') !== undefined)
+    ) {
+      setLoading(null);
+    }
+  }, [gitResults, loading]);
 
   const handleAction = useCallback(
     (action: string, params?: Record<string, unknown>) => {
@@ -163,33 +297,16 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
     [gitResults, onSend],
   );
 
-  const handleStage = useCallback(
-    (file: string) => handleAction('stage', { file }),
-    [handleAction],
-  );
+  const handleStage = useCallback((file: string) => handleAction('stage', { file }), [handleAction]);
+  const handleUnstage = useCallback((file: string) => handleAction('unstage', { file }), [handleAction]);
+  const handleStageAll = useCallback(() => handleAction('stage'), [handleAction]);
+  const handleUnstageAll = useCallback(() => handleAction('unstage'), [handleAction]);
 
-  const handleUnstage = useCallback(
-    (file: string) => handleAction('unstage', { file }),
-    [handleAction],
-  );
-
-  const handleStageAll = useCallback(
-    () => handleAction('stage'),
-    [handleAction],
-  );
-
-  const handleUnstageAll = useCallback(
-    () => handleAction('unstage'),
-    [handleAction],
-  );
-
-  const handleSelectFile = useCallback(
-    (path: string, staged: boolean) => {
-      setSelectedFile({ path, staged });
-      onSend({ type: 'git', action: 'diff', params: { file: path, staged } });
-    },
-    [onSend],
-  );
+  const handleSelectFile = useCallback((path: string, staged: boolean) => {
+    setSelectedFile({ path, staged });
+    setLoading('diff');
+    onSend({ type: 'git', action: 'diff', params: { file: path, staged } });
+  }, [onSend]);
 
   const handleCommit = useCallback(() => {
     if (!commitMessage.trim()) return;
@@ -197,13 +314,39 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
     setCommitMessage('');
   }, [commitMessage, handleAction]);
 
-  const handleCheckout = useCallback(
-    (branch: string) => {
-      handleAction('checkout', { branch });
-      setShowBranchPicker(false);
-    },
-    [handleAction],
-  );
+  const handleCheckout = useCallback((branch: string) => {
+    handleAction('checkout', { branch });
+    setShowBranchPicker(false);
+  }, [handleAction]);
+
+  const handleSelectCommit = useCallback((commit: LogCommit) => {
+    setSelectedCommit(commit);
+    setSelectedCommitDiff(null);
+    requestCommitFiles(commit.hash);
+  }, [requestCommitFiles]);
+
+  const handleSelectCommitFile = useCallback((hash: string, file: string) => {
+    setSelectedCommitDiff({ hash, file });
+    requestCommitDiff(hash, file);
+  }, [requestCommitDiff]);
+
+  const handleLoadMoreHistory = useCallback(() => {
+    if (!historyHasMore || loading === 'log') return;
+    historyLoadMoreRef.current = true;
+    requestLog(historySkip);
+  }, [historyHasMore, historySkip, loading, requestLog]);
+
+  const handleHistoryScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    if (activeTab !== 'history' || !historyHasMore || loading === 'log') return;
+
+    const target = event.currentTarget;
+    const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+
+    if (remaining < 120) {
+      historyLoadMoreRef.current = true;
+      requestLog(historySkip);
+    }
+  }, [activeTab, historyHasMore, historySkip, loading, requestLog]);
 
   if (!open) return null;
 
@@ -211,27 +354,20 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
   const unstagedFiles = gitStatus?.unstagedFiles ?? [];
   const currentBranch = gitStatus?.branch ?? '';
   const branches = branchesResult?.branches ?? [];
+  const commitFiles = commitFilesResult?.files ?? [];
 
   return (
     <>
-      {/* 모바일 오버레이 */}
-      <div
-        className="fixed inset-0 bg-black/40 z-40 md:hidden"
-        onClick={onClose}
-      />
+      <div className="fixed inset-0 bg-black/40 z-40 md:hidden" onClick={onClose} />
 
-      {/* 패널 */}
       <div className="fixed right-0 top-0 bottom-0 w-full max-w-sm bg-(--bg-primary) border-l border-(--border) z-50 flex flex-col animate-slide-left shadow-2xl">
-
-        {/* 헤더 */}
         <div className="flex items-center justify-between px-3 py-2.5 border-b border-(--border) shrink-0">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <GitBranch size={16} className="text-(--accent) shrink-0" />
-            <h2 className="font-semibold text-sm shrink-0">소스 제어</h2>
-            {/* 브랜치 전환 버튼 */}
+            <h2 className="font-semibold text-sm shrink-0">Source Control</h2>
             {currentBranch && (
               <button
-                onClick={() => setShowBranchPicker((v) => !v)}
+                onClick={() => setShowBranchPicker((value) => !value)}
                 className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-(--bg-tertiary) hover:bg-(--bg-hover) transition-colors min-w-0"
               >
                 <span className="text-xs font-mono truncate max-w-30 text-(--text-secondary)">
@@ -240,23 +376,39 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
                 <ChevronDown size={11} className="text-(--text-muted) shrink-0" />
               </button>
             )}
-            {/* ahead/behind */}
             {(gitStatus?.ahead ?? 0) > 0 && (
-              <span className="text-xs text-(--success) shrink-0">↑{gitStatus!.ahead}</span>
+              <span className="text-xs text-(--success) shrink-0">↑{gitStatus?.ahead}</span>
             )}
             {(gitStatus?.behind ?? 0) > 0 && (
-              <span className="text-xs text-(--warning) shrink-0">↓{gitStatus!.behind}</span>
+              <span className="text-xs text-(--warning) shrink-0">↓{gitStatus?.behind}</span>
             )}
           </div>
+
           <div className="flex items-center gap-0.5 shrink-0">
             <button
-              onClick={requestStatus}
+              onClick={() => {
+                requestStatus();
+                if (activeTab === 'history') {
+                  historyLoadMoreRef.current = false;
+                  requestLog(0);
+                }
+                if (selectedCommit) requestCommitFiles(selectedCommit.hash);
+                if (selectedCommitDiff) requestCommitDiff(selectedCommitDiff.hash, selectedCommitDiff.file);
+              }}
               className="p-1.5 rounded-lg hover:bg-(--bg-tertiary) transition-colors"
-              title="새로고침"
+              title="Refresh"
             >
               <RefreshCw
                 size={13}
-                className={`text-(--text-muted) ${loading === 'status' ? 'animate-spin' : ''}`}
+                className={`text-(--text-muted) ${
+                  loading === 'status' ||
+                  loading === 'log' ||
+                  loading === 'branches' ||
+                  loading === 'commit_files' ||
+                  loading === 'commit_diff'
+                    ? 'animate-spin'
+                    : ''
+                }`}
               />
             </button>
             <button
@@ -268,10 +420,7 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
           </div>
         </div>
 
-        {/* 패널 본문 (브랜치 피커 or diff or 파일목록) */}
         <div className="flex-1 overflow-hidden relative">
-
-          {/* 브랜치 피커 오버레이 */}
           {showBranchPicker && (
             <GitBranchPicker
               branches={branches}
@@ -282,7 +431,6 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
             />
           )}
 
-          {/* diff 뷰어 */}
           {selectedFile && !showBranchPicker ? (
             <GitDiffViewer
               filePath={selectedFile.path}
@@ -290,164 +438,342 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
               loading={loading === 'diff' || (!!selectedFile && !isDiffMatch && !diffResult?._error)}
               onBack={() => setSelectedFile(null)}
             />
-          ) : (
-            /* 파일 목록 + 커밋 폼 */
+          ) : selectedCommitDiff && selectedCommit && !showBranchPicker ? (
+            <GitDiffViewer
+              filePath={selectedCommitDiff.file}
+              subtitle={`${selectedCommit.shortHash} · ${selectedCommit.subject}`}
+              diff={isCommitDiffMatch ? (commitDiffResult?.diff ?? null) : null}
+              loading={loading === 'commit_diff' || (!!selectedCommitDiff && !isCommitDiffMatch && !commitDiffResult?._error)}
+              onBack={() => setSelectedCommitDiff(null)}
+              emptyMessage="No file diff available for this commit"
+            />
+          ) : selectedCommit && !showBranchPicker ? (
             <div className="h-full flex flex-col overflow-hidden">
-              <div className="flex-1 overflow-y-auto scroll-hover-area px-1 py-1 space-y-0.5">
+              <div className="flex items-center gap-2 px-3 py-2 border-b border-(--border) shrink-0">
+                <button
+                  onClick={() => setSelectedCommit(null)}
+                  className="p-1 rounded hover:bg-(--bg-tertiary) transition-colors"
+                  title="Back"
+                >
+                  <ChevronRight size={16} className="text-(--text-muted) rotate-180" />
+                </button>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-(--text-primary) break-words">
+                    {selectedCommit.subject}
+                  </p>
+                  <p className="text-xs text-(--text-muted) truncate">
+                    {selectedCommit.shortHash} · {selectedCommit.author} · {formatCommitDate(selectedCommit.timestamp)}
+                  </p>
+                </div>
+              </div>
 
-                {/* 에러 */}
-                {gitStatus?._error && (
-                  <div className="text-xs text-(--error) bg-(--error)/10 rounded-lg px-3 py-2 mx-2">
-                    {gitStatus._error}
+              <div className="flex-1 overflow-y-auto scroll-hover-area px-2 py-2 space-y-1">
+                {commitFilesResult?._error && (
+                  <div className="text-xs text-(--error) bg-(--error)/10 rounded-lg px-3 py-2">
+                    {commitFilesResult._error}
                   </div>
                 )}
 
-                {/* Staged Changes */}
-                <div>
-                  <button
-                    onClick={() => setStagedOpen((v) => !v)}
-                    className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-(--bg-tertiary) rounded transition-colors group"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      {stagedOpen
-                        ? <ChevronDown size={13} className="text-(--text-muted)" />
-                        : <ChevronRight size={13} className="text-(--text-muted)" />
-                      }
-                      <span className="text-xs font-semibold text-(--text-secondary) uppercase tracking-wider">
-                        스테이징된 변경사항
-                      </span>
-                      {stagedFiles.length > 0 && (
-                        <span className="text-xs text-(--text-muted)">({stagedFiles.length})</span>
-                      )}
-                    </div>
-                    {stagedFiles.length > 0 && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleUnstageAll(); }}
-                        className="opacity-0 group-hover:opacity-100 text-xs text-(--text-muted) hover:text-(--text-primary) px-1.5 py-0.5 rounded hover:bg-(--bg-hover) transition-all"
-                        title="전체 언스테이징"
-                      >
-                        전체 취소
-                      </button>
-                    )}
-                  </button>
-
-                  {stagedOpen && (
-                    <div className="space-y-0.5 ml-1">
-                      {stagedFiles.length === 0 ? (
-                        <p className="text-xs text-(--text-muted) px-4 py-1">없음</p>
-                      ) : (
-                        stagedFiles.map((file) => (
-                          <div
-                            key={`staged-${file.path}`}
-                            className="flex items-center gap-1.5 px-2 py-1.5 rounded hover:bg-(--bg-tertiary) transition-colors cursor-pointer group"
-                            onClick={() => handleSelectFile(file.path, true)}
-                          >
-                            {fileStatusIcon(file.status)}
-                            <span className="text-xs font-mono truncate flex-1 text-(--text-primary)">
-                              {file.path.split('/').at(-1)}
-                            </span>
-                            <span className="text-xs text-(--text-muted) font-mono truncate hidden group-hover:hidden max-w-20">
-                              {file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''}
-                            </span>
-                            {statusBadge(file.status)}
-                            {/* 언스테이징 버튼 */}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleUnstage(file.path); }}
-                              className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-(--bg-hover) transition-all"
-                              title="언스테이징"
-                            >
-                              {loading === 'unstage'
-                                ? <Loader2 size={12} className="animate-spin text-(--text-muted)" />
-                                : <Minus size={12} className="text-(--text-muted)" />
-                              }
-                            </button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Changes (Unstaged) */}
-                <div>
-                  <button
-                    onClick={() => setChangesOpen((v) => !v)}
-                    className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-(--bg-tertiary) rounded transition-colors group"
-                  >
-                    <div className="flex items-center gap-1.5">
-                      {changesOpen
-                        ? <ChevronDown size={13} className="text-(--text-muted)" />
-                        : <ChevronRight size={13} className="text-(--text-muted)" />
-                      }
-                      <span className="text-xs font-semibold text-(--text-secondary) uppercase tracking-wider">
-                        변경사항
-                      </span>
-                      {unstagedFiles.length > 0 && (
-                        <span className="text-xs text-(--text-muted)">({unstagedFiles.length})</span>
-                      )}
-                    </div>
-                    {unstagedFiles.length > 0 && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleStageAll(); }}
-                        className="opacity-0 group-hover:opacity-100 text-xs text-(--text-muted) hover:text-(--text-primary) px-1.5 py-0.5 rounded hover:bg-(--bg-hover) transition-all"
-                        title="전체 스테이징"
-                      >
-                        전체 추가
-                      </button>
-                    )}
-                  </button>
-
-                  {changesOpen && (
-                    <div className="space-y-0.5 ml-1">
-                      {unstagedFiles.length === 0 ? (
-                        <p className="text-xs text-(--text-muted) px-4 py-1">없음</p>
-                      ) : (
-                        unstagedFiles.map((file) => (
-                          <div
-                            key={`unstaged-${file.path}`}
-                            className="flex items-center gap-1.5 px-2 py-1.5 rounded hover:bg-(--bg-tertiary) transition-colors cursor-pointer group"
-                            onClick={() => handleSelectFile(file.path, false)}
-                          >
-                            {fileStatusIcon(file.status)}
-                            <span className="text-xs font-mono truncate flex-1 text-(--text-primary)">
-                              {file.path.split('/').at(-1)}
-                            </span>
-                            {statusBadge(file.status)}
-                            {/* 스테이징 버튼 */}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleStage(file.path); }}
-                              className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-(--bg-hover) transition-all"
-                              title="스테이징"
-                            >
-                              {loading === 'stage'
-                                ? <Loader2 size={12} className="animate-spin text-(--text-muted)" />
-                                : <Plus size={12} className="text-(--text-muted)" />
-                              }
-                            </button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* 변경사항 없음 */}
-                {gitStatus && !gitStatus._error && gitStatus.clean && (
+                {loading === 'commit_files' && commitFiles.length === 0 ? (
+                  <div className="flex items-center justify-center h-24">
+                    <Loader2 size={16} className="animate-spin text-(--text-muted)" />
+                  </div>
+                ) : commitFiles.length === 0 ? (
                   <p className="text-xs text-(--text-muted) text-center py-6">
-                    변경사항 없음
+                    No changed files in this commit
                   </p>
+                ) : (
+                  commitFiles.map((file) => (
+                    <button
+                      key={`${selectedCommit.hash}:${file.path}:${file.nextPath ?? ''}`}
+                      onClick={() => handleSelectCommitFile(selectedCommit.hash, file.nextPath ?? file.path)}
+                      className="w-full flex items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-(--bg-tertiary) transition-colors"
+                    >
+                      {fileStatusIcon(file.status)}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-mono text-(--text-primary) truncate">
+                          {file.nextPath ?? file.path}
+                        </p>
+                        {file.nextPath && file.nextPath !== file.path && (
+                          <p className="text-[11px] text-(--text-muted) truncate">
+                            from {file.path}
+                          </p>
+                        )}
+                      </div>
+                      {statusBadge(file.status)}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="h-full flex flex-col overflow-hidden">
+              <div className="px-2 pt-2 pb-1 shrink-0">
+                <div className="grid grid-cols-2 gap-1 rounded-xl bg-(--bg-secondary) p-1 border border-(--border)">
+                  <button
+                    onClick={() => {
+                      setSelectedCommit(null);
+                      setSelectedCommitDiff(null);
+                      setActiveTab('changes');
+                    }}
+                    className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${
+                      activeTab === 'changes'
+                        ? 'bg-(--bg-primary) text-(--text-primary)'
+                        : 'text-(--text-muted) hover:text-(--text-primary)'
+                    }`}
+                  >
+                    <FileText size={13} />
+                    Changes
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedCommit(null);
+                      setSelectedCommitDiff(null);
+                      setActiveTab('history');
+                      historyLoadMoreRef.current = false;
+                      requestLog(0);
+                    }}
+                    className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${
+                      activeTab === 'history'
+                        ? 'bg-(--bg-primary) text-(--text-primary)'
+                        : 'text-(--text-muted) hover:text-(--text-primary)'
+                    }`}
+                  >
+                    <GitGraph size={13} />
+                    History
+                  </button>
+                </div>
+              </div>
+
+              <div
+                className="flex-1 overflow-y-auto scroll-hover-area px-1 py-1 space-y-0.5"
+                onScroll={handleHistoryScroll}
+              >
+                {activeTab === 'changes' ? (
+                  <>
+                    {gitStatus?._error && (
+                      <div className="text-xs text-(--error) bg-(--error)/10 rounded-lg px-3 py-2 mx-2">
+                        {gitStatus._error}
+                      </div>
+                    )}
+
+                    <div>
+                      <button
+                        onClick={() => setStagedOpen((value) => !value)}
+                        className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-(--bg-tertiary) rounded transition-colors group"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          {stagedOpen ? (
+                            <ChevronDown size={13} className="text-(--text-muted)" />
+                          ) : (
+                            <ChevronRight size={13} className="text-(--text-muted)" />
+                          )}
+                          <span className="text-xs font-semibold text-(--text-secondary) uppercase tracking-wider">
+                            Staged Changes
+                          </span>
+                          {stagedFiles.length > 0 && (
+                            <span className="text-xs text-(--text-muted)">({stagedFiles.length})</span>
+                          )}
+                        </div>
+                        {stagedFiles.length > 0 && (
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleUnstageAll();
+                            }}
+                            className="opacity-0 group-hover:opacity-100 text-xs text-(--text-muted) hover:text-(--text-primary) px-1.5 py-0.5 rounded hover:bg-(--bg-hover) transition-all"
+                            title="Unstage all"
+                          >
+                            Unstage all
+                          </button>
+                        )}
+                      </button>
+
+                      {stagedOpen && (
+                        <div className="space-y-0.5 ml-1">
+                          {stagedFiles.length === 0 ? (
+                            <p className="text-xs text-(--text-muted) px-4 py-1">No staged files</p>
+                          ) : (
+                            stagedFiles.map((file) => (
+                              <div
+                                key={`staged-${file.path}`}
+                                className="flex items-center gap-1.5 px-2 py-1.5 rounded hover:bg-(--bg-tertiary) transition-colors cursor-pointer group"
+                                onClick={() => handleSelectFile(file.path, true)}
+                              >
+                                {fileStatusIcon(file.status)}
+                                <span className="text-xs font-mono truncate flex-1 text-(--text-primary)">
+                                  {file.path.split('/').at(-1)}
+                                </span>
+                                <span className="text-xs text-(--text-muted) font-mono truncate hidden group-hover:hidden max-w-20">
+                                  {file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''}
+                                </span>
+                                {statusBadge(file.status)}
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleUnstage(file.path);
+                                  }}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-(--bg-hover) transition-all"
+                                  title="Unstage"
+                                >
+                                  {loading === 'unstage' ? (
+                                    <Loader2 size={12} className="animate-spin text-(--text-muted)" />
+                                  ) : (
+                                    <Minus size={12} className="text-(--text-muted)" />
+                                  )}
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <button
+                        onClick={() => setChangesOpen((value) => !value)}
+                        className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-(--bg-tertiary) rounded transition-colors group"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          {changesOpen ? (
+                            <ChevronDown size={13} className="text-(--text-muted)" />
+                          ) : (
+                            <ChevronRight size={13} className="text-(--text-muted)" />
+                          )}
+                          <span className="text-xs font-semibold text-(--text-secondary) uppercase tracking-wider">
+                            Changes
+                          </span>
+                          {unstagedFiles.length > 0 && (
+                            <span className="text-xs text-(--text-muted)">({unstagedFiles.length})</span>
+                          )}
+                        </div>
+                        {unstagedFiles.length > 0 && (
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleStageAll();
+                            }}
+                            className="opacity-0 group-hover:opacity-100 text-xs text-(--text-muted) hover:text-(--text-primary) px-1.5 py-0.5 rounded hover:bg-(--bg-hover) transition-all"
+                            title="Stage all"
+                          >
+                            Stage all
+                          </button>
+                        )}
+                      </button>
+
+                      {changesOpen && (
+                        <div className="space-y-0.5 ml-1">
+                          {unstagedFiles.length === 0 ? (
+                            <p className="text-xs text-(--text-muted) px-4 py-1">No unstaged files</p>
+                          ) : (
+                            unstagedFiles.map((file) => (
+                              <div
+                                key={`unstaged-${file.path}`}
+                                className="flex items-center gap-1.5 px-2 py-1.5 rounded hover:bg-(--bg-tertiary) transition-colors cursor-pointer group"
+                                onClick={() => handleSelectFile(file.path, false)}
+                              >
+                                {fileStatusIcon(file.status)}
+                                <span className="text-xs font-mono truncate flex-1 text-(--text-primary)">
+                                  {file.path.split('/').at(-1)}
+                                </span>
+                                {statusBadge(file.status)}
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleStage(file.path);
+                                  }}
+                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-(--bg-hover) transition-all"
+                                  title="Stage"
+                                >
+                                  {loading === 'stage' ? (
+                                    <Loader2 size={12} className="animate-spin text-(--text-muted)" />
+                                  ) : (
+                                    <Plus size={12} className="text-(--text-muted)" />
+                                  )}
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {gitStatus && !gitStatus._error && gitStatus.clean && (
+                      <p className="text-xs text-(--text-muted) text-center py-6">
+                        Working tree is clean
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {logResult?._error && (
+                      <div className="text-xs text-(--error) bg-(--error)/10 rounded-lg px-3 py-2 mx-2">
+                        {logResult._error}
+                      </div>
+                    )}
+
+                    {loading === 'log' && historyItems.length === 0 ? (
+                      <div className="flex items-center justify-center h-24">
+                        <Loader2 size={16} className="animate-spin text-(--text-muted)" />
+                      </div>
+                    ) : historyItems.length === 0 ? (
+                      <p className="text-xs text-(--text-muted) text-center py-6">
+                        No commit history available
+                      </p>
+                    ) : (
+                      <div className="px-1 py-1">
+                        {historyItems.map((commit, index) => (
+                          <button
+                            key={commit.hash}
+                            onClick={() => handleSelectCommit(commit)}
+                            className="w-full grid grid-cols-[24px_minmax(0,1fr)] gap-2 rounded-lg px-2 py-2 text-left hover:bg-(--bg-tertiary) transition-colors"
+                          >
+                            <div className="relative flex justify-center pt-0.5">
+                              {index < historyItems.length - 1 && (
+                                <span className="absolute top-4 bottom-[-10px] w-px bg-(--border)" />
+                              )}
+                              <span className="relative z-10 mt-0.5 h-2.5 w-2.5 rounded-full border border-(--accent) bg-(--bg-primary)" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="text-xs font-medium text-(--text-primary) break-words">
+                                  {commit.subject}
+                                </p>
+                                <span className="shrink-0 rounded bg-(--bg-secondary) px-1.5 py-0.5 text-[10px] font-mono text-(--text-muted)">
+                                  {commit.shortHash}
+                                </span>
+                              </div>
+                              <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-(--text-muted)">
+                                <span className="truncate">{commit.author}</span>
+                                <span className="shrink-0">{formatCommitDate(commit.timestamp)}</span>
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+
+                        {historyHasMore && (
+                          <button
+                            onClick={handleLoadMoreHistory}
+                            disabled={loading === 'log'}
+                            className="mt-2 w-full rounded-lg border border-(--border) bg-(--bg-secondary) px-3 py-2 text-xs text-(--text-secondary) hover:bg-(--bg-tertiary) transition-colors disabled:opacity-50"
+                          >
+                            {loading === 'log' ? 'Loading older commits...' : 'Load older commits'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
-              {/* 커밋 폼 */}
               <div className="px-3 pt-2 pb-3 border-t border-(--border) shrink-0">
                 <textarea
                   value={commitMessage}
-                  onChange={(e) => setCommitMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleCommit();
+                  onChange={(event) => setCommitMessage(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) handleCommit();
                   }}
-                  placeholder="커밋 메시지 (Ctrl+Enter)"
+                  placeholder="Commit message (Ctrl+Enter)"
                   rows={2}
                   className="w-full px-2.5 py-2 rounded-lg bg-(--input-bg) border border-(--input-border) text-xs placeholder-(--text-muted) focus:border-(--accent) focus:outline-none resize-none mb-2"
                 />
@@ -456,24 +782,25 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
                   disabled={!commitMessage.trim() || loading === 'commit' || stagedFiles.length === 0}
                   className="flex items-center justify-center gap-1.5 w-full py-1.5 rounded-lg bg-(--accent) text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed mb-2"
                 >
-                  {loading === 'commit'
-                    ? <Loader2 size={13} className="animate-spin" />
-                    : <GitCommit size={13} />
-                  }
-                  커밋
+                  {loading === 'commit' ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <GitCommit size={13} />
+                  )}
+                  Commit
                 </button>
 
-                {/* Pull / Push */}
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => handleAction('pull')}
                     disabled={loading === 'pull'}
                     className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-(--bg-secondary) border border-(--border) text-xs hover:bg-(--bg-tertiary) transition-colors disabled:opacity-40"
                   >
-                    {loading === 'pull'
-                      ? <Loader2 size={13} className="animate-spin" />
-                      : <Download size={13} />
-                    }
+                    {loading === 'pull' ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Download size={13} />
+                    )}
                     Pull
                   </button>
                   <button
@@ -481,10 +808,11 @@ export default function GitPanel({ open, onClose, onSend, gitResults }: GitPanel
                     disabled={loading === 'push'}
                     className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-(--bg-secondary) border border-(--border) text-xs hover:bg-(--bg-tertiary) transition-colors disabled:opacity-40"
                   >
-                    {loading === 'push'
-                      ? <Loader2 size={13} className="animate-spin" />
-                      : <Upload size={13} />
-                    }
+                    {loading === 'push' ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Upload size={13} />
+                    )}
                     Push
                   </button>
                 </div>
