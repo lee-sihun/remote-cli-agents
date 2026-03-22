@@ -905,6 +905,140 @@ describe('CodexAdapter', () => {
     });
   });
 
+  it('maps Codex collabAgentToolCall items into tool-call messages', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+
+    wireCodexRpc(proc, (request) => {
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-subagent',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-subagent',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new CodexAdapter();
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-subagent', 'delegate', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-subagent',
+        turn: {
+          id: 'turn-subagent',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-subagent',
+        item: {
+          id: 'call-subagent',
+          type: 'collabAgentToolCall',
+          tool: 'spawnAgent',
+          prompt: 'inspect cwd and git status',
+          model: 'gpt-5.4',
+          reasoningEffort: 'medium',
+          senderThreadId: 'thread-subagent',
+          receiverThreadIds: ['worker-1'],
+          agentsStates: [],
+          status: 'inProgress',
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-subagent',
+        item: {
+          id: 'call-subagent',
+          type: 'collabAgentToolCall',
+          tool: 'spawnAgent',
+          prompt: 'inspect cwd and git status',
+          model: 'gpt-5.4',
+          reasoningEffort: 'medium',
+          senderThreadId: 'thread-subagent',
+          receiverThreadIds: ['worker-1'],
+          agentsStates: [{ threadId: 'worker-1', status: 'completed' }],
+          status: 'completed',
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-subagent',
+        turn: {
+          id: 'turn-subagent',
+          status: 'completed',
+          error: null,
+        },
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed).toHaveLength(2);
+    expect(completed[0]?.message.toolCalls?.[0]).toMatchObject({
+      id: 'call-subagent',
+      name: 'subagent:spawnAgent',
+      status: 'running',
+      input: {
+        prompt: 'inspect cwd and git status',
+        model: 'gpt-5.4',
+        reasoningEffort: 'medium',
+        senderThreadId: 'thread-subagent',
+        receiverThreadIds: ['worker-1'],
+      },
+    });
+    expect(completed[1]?.message.toolCalls?.[0]).toMatchObject({
+      id: 'call-subagent',
+      name: 'subagent:spawnAgent',
+      status: 'completed',
+    });
+    expect(completed[1]?.message.toolCalls?.[0]?.output).toContain('worker-1');
+  });
+
   it('preserves refreshed Codex context usage when usage updates arrive between compaction start and completion', async () => {
     const proc = createFakeChildProcess();
     childProcessMock.spawn.mockReturnValue(proc);

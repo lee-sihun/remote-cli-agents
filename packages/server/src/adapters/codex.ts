@@ -1548,6 +1548,21 @@ function mapThreadItemToToolCall(item: Record<string, unknown>, existing?: ToolC
         status: mapDynamicToolStatus(readString(item, 'status'), existing ? 'completed' : 'running'),
       };
 
+    case 'collabAgentToolCall':
+      return {
+        id: itemId,
+        name: `subagent:${readString(item, 'tool') || 'task'}`,
+        input: {
+          prompt: readString(item, 'prompt') || '',
+          model: readString(item, 'model') || '',
+          reasoningEffort: readString(item, 'reasoningEffort') || '',
+          senderThreadId: readString(item, 'senderThreadId') || '',
+          receiverThreadIds: readArray(item, 'receiverThreadIds') || [],
+        },
+        output: JSON.stringify(readArray(item, 'agentsStates') || []),
+        status: mapToolStatus(readString(item, 'status'), existing ? 'completed' : 'running'),
+      };
+
     case 'webSearch':
       return {
         id: itemId,
