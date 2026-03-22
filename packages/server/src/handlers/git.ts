@@ -23,6 +23,8 @@ const ALLOWED_ACTIONS = new Set([
   'pull',
   'branches',
   'checkout',
+  'stage',
+  'unstage',
   'stash',
   'stash_pop',
 ]);
@@ -55,6 +57,10 @@ export async function handleGit(
         return await gitBranches(cwd);
       case 'checkout':
         return await gitCheckout(cwd, params);
+      case 'stage':
+        return await gitStage(cwd, params);
+      case 'unstage':
+        return await gitUnstage(cwd, params);
       case 'stash':
         return await gitStash(cwd, params);
       case 'stash_pop':
@@ -86,55 +92,100 @@ function execGit(args: string[], options: GitExecOptions): Promise<string> {
   });
 }
 
-// porcelain XY 상태코드 → human-readable 변환
-function parseStatusCode(code: string): string {
+// 종료코드 1 허용 버전 (git diff --no-index 용: diff 존재 시 code=1이 정상)
+function execGitAllowFail(args: string[], options: GitExecOptions): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, {
+      cwd: options.cwd,
+      maxBuffer: options.maxBuffer || 1024 * 1024 * 5,
+    }, (error, stdout, stderr) => {
+      if (error && !stdout.trim()) {
+        reject(new Error(stderr || error.message));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+// porcelain v2 상태코드 → human-readable 변환
+function parseV2StatusCode(code: string): string {
   switch (code) {
     case 'A': return 'added';
     case 'D': return 'deleted';
     case 'R': return 'renamed';
     case 'M': return 'modified';
-    case '?': return 'untracked';
+    case 'C': return 'copied';
     default:   return 'modified';
   }
 }
 
-// 병합 충돌 XY 조합
-const CONFLICT_XY = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
-
 async function gitStatus(cwd: string): Promise<GitResult> {
-  const [statusOutput, branchOutput] = await Promise.all([
-    execGit(['status', '--porcelain', '-u'], { cwd }),
-    execGit(['branch', '--show-current'], { cwd }),
-  ]);
+  const output = await execGit(
+    ['status', '--porcelain=v2', '--branch', '-u'],
+    { cwd },
+  );
 
-  const files = statusOutput
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const x = line[0] ?? ' '; // index (staged)
-      const y = line[1] ?? ' '; // worktree (unstaged)
-      const rawPath = line.slice(3);
-      // Rename/Copy: "old -> new" 형태에서 새 경로만 추출
-      const path = (x === 'R' || x === 'C')
-        ? (rawPath.split(' -> ').at(-1) ?? rawPath)
-        : rawPath;
+  let branch = '';
+  let ahead = 0;
+  let behind = 0;
 
-      if (CONFLICT_XY.has(`${x}${y}`)) {
-        return { path, status: 'conflicted', staged: false };
+  const stagedFiles: Array<{ path: string; status: string }> = [];
+  const unstagedFiles: Array<{ path: string; status: string }> = [];
+
+  for (const line of output.split('\n')) {
+    // 브랜치 정보 헤더
+    if (line.startsWith('# branch.head ')) {
+      branch = line.slice('# branch.head '.length).trim();
+    } else if (line.startsWith('# branch.ab ')) {
+      // "+2 -1" 형태
+      const match = line.match(/\+(\d+) -(\d+)/);
+      if (match) {
+        ahead = parseInt(match[1], 10);
+        behind = parseInt(match[2], 10);
       }
-
-      const staged = x !== ' ' && x !== '?';
-      const code = staged ? x : y;
-      return { path, status: parseStatusCode(code), staged };
-    });
+    } else if (line.startsWith('1 ')) {
+      // 일반 변경: "1 XY sub mH mI mW hH hI path"
+      // path는 마지막 필드이며 공백 포함 가능
+      const m = /^1 (\S{2}) \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/.exec(line);
+      if (m) {
+        const x = m[1][0] ?? ' ';
+        const y = m[1][1] ?? ' ';
+        const filePath = m[2];
+        if (x !== '.' && x !== ' ') stagedFiles.push({ path: filePath, status: parseV2StatusCode(x) });
+        if (y !== '.' && y !== ' ') unstagedFiles.push({ path: filePath, status: parseV2StatusCode(y) });
+      }
+    } else if (line.startsWith('2 ')) {
+      // rename/copy: "2 XY sub mH mI mW hH hI X score newPath\torigPath"
+      const m = /^2 (\S{2}) \S+ \S+ \S+ \S+ \S+ \S+ \S+ (.+)\t(.+)$/.exec(line);
+      if (m) {
+        const x = m[1][0] ?? ' ';
+        const y = m[1][1] ?? ' ';
+        const newPath = m[2];
+        if (x !== '.' && x !== ' ') stagedFiles.push({ path: newPath, status: 'renamed' });
+        if (y !== '.' && y !== ' ') unstagedFiles.push({ path: newPath, status: 'renamed' });
+      }
+    } else if (line.startsWith('u ')) {
+      // 충돌: "u XY sub mH mI mW mB hH hI hB path"
+      const m = /^u \S{2} \S+ \S+ \S+ \S+ \S+ \S+ \S+ \S+ (.+)$/.exec(line);
+      if (m) {
+        unstagedFiles.push({ path: m[1], status: 'conflicted' });
+      }
+    } else if (line.startsWith('? ')) {
+      // untracked
+      unstagedFiles.push({ path: line.slice(2), status: 'untracked' });
+    }
+  }
 
   return {
     success: true,
     data: {
-      branch: branchOutput.trim(),
-      files,
-      clean: files.length === 0,
+      branch,
+      ahead,
+      behind,
+      stagedFiles,
+      unstagedFiles,
+      clean: stagedFiles.length === 0 && unstagedFiles.length === 0,
     },
   };
 }
@@ -174,18 +225,41 @@ async function gitDiff(
   cwd: string,
   params: Record<string, unknown>,
 ): Promise<GitResult> {
+  const file = typeof params.file === 'string' ? params.file : undefined;
+  const staged = Boolean(params.staged);
+
+  // untracked 파일은 git diff로 내용이 없음 → git diff --no-index 사용
+  if (file && !staged) {
+    const isUntracked = await checkUntracked(cwd, file);
+    if (isUntracked) {
+      // --no-index는 diff 존재 시 exit code 1 반환이 정상 → stdout을 살리는 래퍼 사용
+      const output = await execGitAllowFail(
+        ['diff', '--no-index', '--', '/dev/null', file],
+        { cwd },
+      );
+      return { success: true, data: { diff: output, file, staged } };
+    }
+  }
+
   const args = ['diff'];
-
-  if (params.staged) {
-    args.push('--cached');
-  }
-
-  if (typeof params.file === 'string') {
-    args.push('--', params.file);
-  }
+  if (staged) args.push('--cached');
+  if (file) args.push('--', file);
 
   const output = await execGit(args, { cwd });
-  return { success: true, data: { diff: output } };
+  return { success: true, data: { diff: output, file, staged } };
+}
+
+// untracked 파일 여부 확인
+async function checkUntracked(cwd: string, file: string): Promise<boolean> {
+  try {
+    const output = await execGit(
+      ['ls-files', '--others', '--exclude-standard', '--', file],
+      { cwd },
+    );
+    return output.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function gitCommit(
@@ -197,12 +271,7 @@ async function gitCommit(
     return { success: false, error: 'Commit message is required' };
   }
 
-  // stage 여부
-  const args = ['commit'];
-  if (params.all) {
-    args.push('-a');
-  }
-  args.push('-m', message);
+  const args = ['commit', '-m', message];
 
   const output = await execGit(args, { cwd });
   return { success: true, data: { output: output.trim() } };
@@ -256,8 +325,11 @@ async function gitBranches(cwd: string): Promise<GitResult> {
       return {
         name: name.trim(),
         current: head?.trim() === '*',
+        remote: name.trim().startsWith('remotes/') || name.trim().startsWith('origin/'),
       };
-    });
+    })
+    // HEAD 심볼릭 ref 및 origin/HEAD 노이즈 제거
+    .filter((b) => !b.name.endsWith('/HEAD'));
 
   return { success: true, data: { branches } };
 }
@@ -271,13 +343,59 @@ async function gitCheckout(
     return { success: false, error: 'Branch or file name is required' };
   }
 
-  const args = ['checkout'];
-
-  if (params.create) {
-    args.push('-b');
+  // 브랜치 전환은 switch 우선, 파일 복구는 checkout
+  if (params.branch) {
+    // 원격 트래킹 브랜치 처리: remotes/origin/feature 또는 origin/feature
+    const remoteMatch = /^(?:remotes\/)?origin\/(.+)$/.exec(target);
+    if (remoteMatch) {
+      const localName = remoteMatch[1];
+      const output = await execGit(['switch', '-c', localName, '--track', target], { cwd });
+      return { success: true, data: { output: output.trim() } };
+    }
+    const args = params.create
+      ? ['switch', '-c', target]
+      : ['switch', target];
+    const output = await execGit(args, { cwd });
+    return { success: true, data: { output: output.trim() } };
   }
 
-  args.push(target);
+  const output = await execGit(['checkout', '--', target], { cwd });
+  return { success: true, data: { output: output.trim() } };
+}
+
+// 파일 스테이징 (git add)
+async function gitStage(
+  cwd: string,
+  params: Record<string, unknown>,
+): Promise<GitResult> {
+  const file = params.file;
+  const args = ['add'];
+
+  if (typeof file === 'string') {
+    args.push('--', file);
+  } else {
+    // 전체 스테이징
+    args.push('.');
+  }
+
+  const output = await execGit(args, { cwd });
+  return { success: true, data: { output: output.trim() } };
+}
+
+// 파일 언스테이징 (git restore --staged)
+async function gitUnstage(
+  cwd: string,
+  params: Record<string, unknown>,
+): Promise<GitResult> {
+  const file = params.file;
+  const args = ['restore', '--staged'];
+
+  if (typeof file === 'string') {
+    args.push('--', file);
+  } else {
+    // 전체 언스테이징
+    args.push('.');
+  }
 
   const output = await execGit(args, { cwd });
   return { success: true, data: { output: output.trim() } };
