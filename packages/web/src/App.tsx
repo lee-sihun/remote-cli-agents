@@ -385,7 +385,13 @@ export default function App() {
 
   const handleGitSend = useCallback(
     (msg: ClientMessage) => {
-      wsRef.current.send(msg);
+      // git/file 메시지에 현재 활성 워크스페이스 자동 주입
+      if (msg.type === 'git' || msg.type === 'file_list' || msg.type === 'file_read') {
+        const workspaceId = storeRef.current.activeWorkspace ?? undefined;
+        wsRef.current.send({ ...msg, workspaceId });
+      } else {
+        wsRef.current.send(msg);
+      }
     },
     [],
   );

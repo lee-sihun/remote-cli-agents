@@ -405,6 +405,14 @@ async function getAgentsList(
   return agents;
 }
 
+// workspaceId가 있으면 해당 workspace 경로, 없으면 기본 cwd 반환
+// workspaceId가 있는데 찾지 못하면 null 반환 (호출자가 에러 처리)
+function resolveWorkspaceCwd(workspaceId: string | undefined, defaultCwd: string): string | null {
+  if (!workspaceId) return defaultCwd;
+  const ws = store.getWorkspace(workspaceId);
+  return ws ? ws.path : null;
+}
+
 // 클라이언트 메시지 처리
 export async function handleClientMessage(
   ws: WebSocket,
@@ -609,22 +617,34 @@ export async function handleClientMessage(
     }
 
     case 'git': {
-      const result = await handleGit(msg.action, msg.params, cwd);
+      const gitCwd = resolveWorkspaceCwd(msg.workspaceId, cwd);
+      if (gitCwd === null) {
+        sendToClient(ws, { type: 'error', message: `Workspace not found: ${msg.workspaceId}`, code: 'WORKSPACE_NOT_FOUND' });
+        break;
+      }
+      const result = await handleGit(msg.action, msg.params, gitCwd);
       sendToClient(ws, {
         type: 'git_result',
         action: msg.action,
         result,
+        workspaceId: msg.workspaceId,
       });
       break;
     }
 
     case 'file_list': {
+      const fileCwd = resolveWorkspaceCwd(msg.workspaceId, cwd);
+      if (fileCwd === null) {
+        sendToClient(ws, { type: 'error', message: `Workspace not found: ${msg.workspaceId}`, code: 'WORKSPACE_NOT_FOUND' });
+        break;
+      }
       try {
-        const entries = await listDirectory(msg.path, cwd);
+        const entries = await listDirectory(msg.path, fileCwd);
         sendToClient(ws, {
           type: 'file_list_result',
           path: msg.path,
           entries,
+          workspaceId: msg.workspaceId,
         });
       } catch (err) {
         sendToClient(ws, {
@@ -637,12 +657,18 @@ export async function handleClientMessage(
     }
 
     case 'file_read': {
+      const readCwd = resolveWorkspaceCwd(msg.workspaceId, cwd);
+      if (readCwd === null) {
+        sendToClient(ws, { type: 'error', message: `Workspace not found: ${msg.workspaceId}`, code: 'WORKSPACE_NOT_FOUND' });
+        break;
+      }
       try {
-        const content = await readFileContent(msg.path, cwd);
+        const content = await readFileContent(msg.path, readCwd);
         sendToClient(ws, {
           type: 'file_read_result',
           path: msg.path,
           content,
+          workspaceId: msg.workspaceId,
         });
       } catch (err) {
         sendToClient(ws, {

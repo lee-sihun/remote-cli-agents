@@ -180,8 +180,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   setActiveWorkspace: (workspaceId) => {
     saveTo('rca_active_workspace', workspaceId);
-    set({ activeWorkspace: workspaceId, activeThread: null });
     saveTo('rca_active_thread', null);
+    // 워크스페이스 전환 시 이전 파일/Git 캐시 초기화
+    set({
+      activeWorkspace: workspaceId,
+      activeThread: null,
+      fileEntries: new Map(),
+      fileContent: new Map(),
+      gitResults: new Map(),
+    });
   },
 
   setActiveAgent: (agent) => {
@@ -590,8 +597,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       case 'workspace_created': {
         const workspaces = [...state.workspaces, msg.workspace];
         saveTo('rca_active_workspace', msg.workspace.id);
-        set({ workspaces, activeWorkspace: msg.workspace.id, activeThread: null });
         saveTo('rca_active_thread', null);
+        set({
+          workspaces,
+          activeWorkspace: msg.workspace.id,
+          activeThread: null,
+          fileEntries: new Map(),
+          fileContent: new Map(),
+          gitResults: new Map(),
+        });
         break;
       }
 
@@ -602,6 +616,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           const next = workspaces.length > 0 ? workspaces[0].id : null;
           updates.activeWorkspace = next;
           updates.activeThread = null;
+          updates.fileEntries = new Map();
+          updates.fileContent = new Map();
+          updates.gitResults = new Map();
           saveTo('rca_active_workspace', next);
           saveTo('rca_active_thread', null);
         }
@@ -617,6 +634,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
 
       case 'file_list_result': {
+        // 현재 워크스페이스와 다른 응답 무시 (전환 중 경쟁 상태 방어)
+        if ((msg.workspaceId ?? null) !== state.activeWorkspace) break;
         const entries = new Map(state.fileEntries);
         entries.set(msg.path, msg.entries);
         set({ fileEntries: entries });
@@ -624,6 +643,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
 
       case 'file_read_result': {
+        if ((msg.workspaceId ?? null) !== state.activeWorkspace) break;
         const content = new Map(state.fileContent);
         content.set(msg.path, msg.content);
         set({ fileContent: content });
@@ -631,6 +651,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
 
       case 'git_result': {
+        if ((msg.workspaceId ?? null) !== state.activeWorkspace) break;
         const results = new Map(state.gitResults);
         // { success, data, error } 래퍼에서 data만 꺼내 저장; 실패 시 error 객체 저장
         const raw = msg.result as { success: boolean; data?: unknown; error?: string } | undefined;

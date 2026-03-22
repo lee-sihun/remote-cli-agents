@@ -306,9 +306,9 @@ export type ClientMessage =
   | { type: "update_workspace"; id: string; name: string }
   | { type: "delete_workspace"; id: string }
   | { type: "browse_directory"; path: string }
-  | { type: "git"; action: string; params?: Record<string, unknown> }
-  | { type: "file_list"; path: string }
-  | { type: "file_read"; path: string }
+  | { type: "git"; action: string; params?: Record<string, unknown>; workspaceId?: string }
+  | { type: "file_list"; path: string; workspaceId?: string }
+  | { type: "file_read"; path: string; workspaceId?: string }
   | { type: "ping" };
 
 // ─── Server → Client Messages ───
@@ -334,9 +334,9 @@ export type ServerMessage =
   | { type: "workspace_created"; workspace: Workspace }
   | { type: "workspace_deleted"; id: string }
   | { type: "directory_list"; path: string; entries: DirEntry[] }
-  | { type: "git_result"; action: string; result: unknown }
-  | { type: "file_list_result"; path: string; entries: FileEntry[] }
-  | { type: "file_read_result"; path: string; content: string }
+  | { type: "git_result"; action: string; result: unknown; workspaceId?: string }
+  | { type: "file_list_result"; path: string; entries: FileEntry[]; workspaceId?: string }
+  | { type: "file_read_result"; path: string; content: string; workspaceId?: string }
   | { type: "error"; message: string; code?: string }
   | { type: "pong" };
 
