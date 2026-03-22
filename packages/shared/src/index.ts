@@ -124,8 +124,9 @@ export const CODEX_OPTIONS: AgentOptionDef[] = [
     type: "select",
     options: [
       { value: "on-request", label: "On Request" },
-      { value: "untrusted", label: "Untrusted" },
+      { value: "untrusted", label: "Unless Trusted" },
       { value: "never", label: "Never Ask" },
+      { value: "on-failure", label: "On Failure" },
     ],
     defaultValue: "never",
   },

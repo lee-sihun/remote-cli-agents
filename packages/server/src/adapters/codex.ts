@@ -54,6 +54,11 @@ interface CodexModelDescriptor {
   isDefault: boolean;
 }
 
+interface CodexConfigRequirements {
+  allowedApprovalPolicies?: string[];
+  allowedSandboxModes?: string[];
+}
+
 interface ThreadInfo {
   id: string;
   remoteThreadId?: string;
@@ -137,11 +142,13 @@ export class CodexAdapter implements AgentAdapter {
   private currentMessageIds = new Map<string, string>();
   private activeToolCalls = new Map<string, Map<string, ToolCall>>();
   private availableModels: CodexModelDescriptor[] = [];
+  private configRequirements: CodexConfigRequirements | null = null;
 
   async start(config: AgentConfig): Promise<void> {
     this.config = normalizeCodexConfig(config);
     this.restoreStoredThreads();
     await this.spawnAppServer();
+    this.config = normalizeCodexConfig(this.config, this.configRequirements);
   }
 
   async stop(): Promise<void> {
@@ -165,6 +172,7 @@ export class CodexAdapter implements AgentAdapter {
     this.activeToolCalls.clear();
     this.threads.clear();
     this.availableModels = [];
+    this.configRequirements = null;
     this.updateStatus('idle');
   }
 
@@ -178,7 +186,7 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   getOptions(): AgentOptionDef[] {
-    return buildCodexOptionDefs(this.availableModels);
+    return buildCodexOptionDefs(this.availableModels, this.configRequirements);
   }
 
   sendMessage(threadId: string | undefined, message: string, config?: AgentConfig): void {
@@ -377,6 +385,7 @@ export class CodexAdapter implements AgentAdapter {
 
     this.initialized = true;
     await this.refreshModels();
+    await this.refreshConfigRequirements();
   }
 
   private async refreshModels(): Promise<void> {
@@ -392,6 +401,33 @@ export class CodexAdapter implements AgentAdapter {
     } catch (error) {
       console.error('[codex] Failed to load model list:', error);
       this.availableModels = [];
+    }
+  }
+
+  private async refreshConfigRequirements(): Promise<void> {
+    try {
+      const result = await this.sendRpc('configRequirements/read', {}, 1_500) as {
+        requirements?: Record<string, unknown> | null;
+      };
+      const requirements = result.requirements;
+      if (!requirements || typeof requirements !== 'object') {
+        this.configRequirements = null;
+        return;
+      }
+
+      this.configRequirements = {
+        allowedApprovalPolicies: normalizeCodexRequirementValues(
+          readArray(requirements, 'allowedApprovalPolicies'),
+          normalizeCodexApprovalPolicy,
+        ),
+        allowedSandboxModes: normalizeCodexRequirementValues(
+          readArray(requirements, 'allowedSandboxModes'),
+          normalizeCodexSandboxMode,
+        ),
+      };
+    } catch (error) {
+      console.error('[codex] Failed to load config requirements:', error);
+      this.configRequirements = null;
     }
   }
 
@@ -495,7 +531,7 @@ export class CodexAdapter implements AgentAdapter {
       type: 'codex',
       cwd: existingThread?.cwd || overrideConfig?.cwd || baseConfig.cwd || this.config?.cwd,
       env: baseConfig.env ? { ...baseConfig.env } : undefined,
-    });
+    }, this.configRequirements);
   }
 
   private async ensureThreadLoaded(thread: ThreadInfo, config: AgentConfig, existingThread: boolean): Promise<void> {
@@ -503,7 +539,7 @@ export class CodexAdapter implements AgentAdapter {
       return;
     }
 
-    const params = buildThreadConfigParams(config);
+    const params = buildThreadConfigParams(config, this.configRequirements);
     const canResume = existingThread && Boolean(thread.remoteThreadId);
     const result = canResume
       ? await this.sendRpc('thread/resume', {
@@ -521,7 +557,7 @@ export class CodexAdapter implements AgentAdapter {
     this.updateThreadFromPayload(thread, result.thread, result.model, config);
   }
 
-  private sendRpc(method: string, params?: Record<string, unknown>): Promise<unknown> {
+  private sendRpc(method: string, params?: Record<string, unknown>, timeoutMs = 30_000): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.process || !this.process.stdin) {
         reject(new Error('Codex app-server is not running'));
@@ -547,7 +583,7 @@ export class CodexAdapter implements AgentAdapter {
         this.pendingRequests.delete(id);
         debugError(`[codex rpc !!] ${method} timeout`);
         pending.reject(new Error(`RPC timeout: ${method}`));
-      }, 30_000);
+      }, timeoutMs);
 
       this.pendingRequests.set(id, { method, resolve, reject, timer });
       this.writeJson(request as unknown as Record<string, unknown>);
@@ -1130,19 +1166,39 @@ export class CodexAdapter implements AgentAdapter {
   }
 }
 
-function normalizeCodexConfig(config: AgentConfig): AgentConfig {
+function normalizeCodexConfig(
+  config: AgentConfig,
+  requirements: CodexConfigRequirements | null = null,
+): AgentConfig {
   const normalized = { ...config };
+  const normalizedRecord = normalized as Record<string, unknown>;
+  const approvalMode = normalizeConfigSelection(
+    normalized.approvalMode,
+    normalizeCodexApprovalPolicy,
+    DEFAULT_CODEX_APPROVAL,
+    requirements?.allowedApprovalPolicies,
+  );
+  const sandboxMode = normalizeConfigSelection(
+    readConfigString(normalized, 'sandboxMode'),
+    normalizeCodexSandboxMode,
+    DEFAULT_CODEX_SANDBOX,
+    requirements?.allowedSandboxModes,
+  );
 
-  if (normalized.approvalMode && !isApprovalPolicy(normalized.approvalMode)) {
-    normalized.approvalMode = DEFAULT_CODEX_APPROVAL;
+  if (approvalMode) {
+    normalized.approvalMode = approvalMode;
+  } else {
+    delete normalized.approvalMode;
   }
 
-  if ((normalized as Record<string, unknown>).sandboxMode && !isSandboxMode((normalized as Record<string, unknown>).sandboxMode)) {
-    (normalized as Record<string, unknown>).sandboxMode = DEFAULT_CODEX_SANDBOX;
+  if (sandboxMode) {
+    normalizedRecord.sandboxMode = sandboxMode;
+  } else {
+    delete normalizedRecord.sandboxMode;
   }
 
-  if ((normalized as Record<string, unknown>).speedMode && !isSpeedMode((normalized as Record<string, unknown>).speedMode)) {
-    (normalized as Record<string, unknown>).speedMode = DEFAULT_CODEX_SPEED;
+  if (normalizedRecord.speedMode && !isSpeedMode(normalizedRecord.speedMode)) {
+    normalizedRecord.speedMode = DEFAULT_CODEX_SPEED;
   }
 
   if (normalized.effortLevel && !isReasoningEffort(normalized.effortLevel)) {
@@ -1152,7 +1208,10 @@ function normalizeCodexConfig(config: AgentConfig): AgentConfig {
   return normalized;
 }
 
-function buildThreadConfigParams(config: AgentConfig): Record<string, unknown> {
+function buildThreadConfigParams(
+  config: AgentConfig,
+  requirements: CodexConfigRequirements | null = null,
+): Record<string, unknown> {
   const params: Record<string, unknown> = {};
 
   if (config.cwd) {
@@ -1161,12 +1220,23 @@ function buildThreadConfigParams(config: AgentConfig): Record<string, unknown> {
   if (config.model) {
     params.model = config.model;
   }
-  if (config.approvalMode && isApprovalPolicy(config.approvalMode)) {
-    params.approvalPolicy = config.approvalMode;
+  const approvalMode = normalizeConfigSelection(
+    config.approvalMode,
+    normalizeCodexApprovalPolicy,
+    DEFAULT_CODEX_APPROVAL,
+    requirements?.allowedApprovalPolicies,
+  );
+  if (approvalMode) {
+    params.approvalPolicy = approvalMode;
   }
 
-  const sandboxMode = readConfigString(config, 'sandboxMode');
-  if (sandboxMode && isSandboxMode(sandboxMode)) {
+  const sandboxMode = normalizeConfigSelection(
+    readConfigString(config, 'sandboxMode'),
+    normalizeCodexSandboxMode,
+    DEFAULT_CODEX_SANDBOX,
+    requirements?.allowedSandboxModes,
+  );
+  if (sandboxMode) {
     params.sandbox = sandboxMode;
   }
 
@@ -1178,9 +1248,33 @@ function buildThreadConfigParams(config: AgentConfig): Record<string, unknown> {
   return params;
 }
 
-function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] {
+function buildCodexOptionDefs(
+  models: CodexModelDescriptor[],
+  requirements: CodexConfigRequirements | null = null,
+): AgentOptionDef[] {
+  const approvalOptions = filterCodexApprovalOptions(requirements);
+  const sandboxOptions = filterCodexSandboxOptions(requirements);
+  const defaultApproval = resolveOptionDefault(approvalOptions, DEFAULT_CODEX_APPROVAL);
+  const defaultSandbox = resolveOptionDefault(sandboxOptions, DEFAULT_CODEX_SANDBOX);
+
   if (models.length === 0) {
-    return CODEX_OPTIONS;
+    return CODEX_OPTIONS.map((option) => {
+      if (option.key === 'approvalMode') {
+        return {
+          ...option,
+          options: approvalOptions,
+          defaultValue: defaultApproval,
+        };
+      }
+      if (option.key === 'sandboxMode') {
+        return {
+          ...option,
+          options: sandboxOptions,
+          defaultValue: defaultSandbox,
+        };
+      }
+      return option;
+    });
   }
 
   const modelOptions = [
@@ -1224,24 +1318,16 @@ function buildCodexOptionDefs(models: CodexModelDescriptor[]): AgentOptionDef[] 
       key: 'approvalMode',
       label: 'Approval',
       type: 'select',
-      options: [
-        { value: 'on-request', label: 'On Request' },
-        { value: 'untrusted', label: 'Untrusted' },
-        { value: 'never', label: 'Never Ask' },
-      ],
-      defaultValue: DEFAULT_CODEX_APPROVAL,
+      options: approvalOptions,
+      defaultValue: defaultApproval,
       description: 'Codex ask-for-approval 정책',
     },
     {
       key: 'sandboxMode',
       label: 'Access',
       type: 'select',
-      options: [
-        { value: 'workspace-write', label: 'Workspace Write' },
-        { value: 'danger-full-access', label: 'Full Access' },
-        { value: 'read-only', label: 'Read Only' },
-      ],
-      defaultValue: DEFAULT_CODEX_SANDBOX,
+      options: sandboxOptions,
+      defaultValue: defaultSandbox,
       description: 'Codex sandbox 모드',
     },
     {
@@ -1578,6 +1664,147 @@ function readArray(obj: Record<string, unknown>, key: string): unknown[] | undef
 function readConfigString(config: AgentConfig, key: string): string | undefined {
   const value = (config as unknown as Record<string, unknown>)[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function codexApprovalOptions(): Array<{ value: string; label: string }> {
+  return [
+    { value: 'on-request', label: 'On Request' },
+    { value: 'untrusted', label: 'Unless Trusted' },
+    { value: 'never', label: 'Never Ask' },
+    { value: 'on-failure', label: 'On Failure' },
+  ];
+}
+
+function codexSandboxOptions(): Array<{ value: string; label: string }> {
+  return [
+    { value: 'workspace-write', label: 'Workspace Write' },
+    { value: 'danger-full-access', label: 'Full Access' },
+    { value: 'read-only', label: 'Read Only' },
+  ];
+}
+
+function filterCodexApprovalOptions(
+  requirements: CodexConfigRequirements | null,
+): Array<{ value: string; label: string }> {
+  const options = codexApprovalOptions();
+  const allowed = requirements?.allowedApprovalPolicies;
+  if (!allowed) {
+    return options;
+  }
+
+  return options.filter((option) => allowed.includes(option.value));
+}
+
+function filterCodexSandboxOptions(
+  requirements: CodexConfigRequirements | null,
+): Array<{ value: string; label: string }> {
+  const options = codexSandboxOptions();
+  const allowed = requirements?.allowedSandboxModes;
+  if (!allowed) {
+    return options;
+  }
+
+  return options.filter((option) => allowed.includes(option.value));
+}
+
+function normalizeCodexApprovalPolicy(value: unknown): string | null {
+  switch (normalizeCodexEnumValue(value)) {
+    case 'on-request':
+      return 'on-request';
+    case 'unless-trusted':
+    case 'untrusted':
+      return 'untrusted';
+    case 'never':
+      return 'never';
+    case 'on-failure':
+      return 'on-failure';
+    default:
+      return null;
+  }
+}
+
+function normalizeCodexSandboxMode(value: unknown): string | null {
+  switch (normalizeCodexEnumValue(value)) {
+    case 'read-only':
+      return 'read-only';
+    case 'workspace-write':
+      return 'workspace-write';
+    case 'danger-full-access':
+      return 'danger-full-access';
+    default:
+      return null;
+  }
+}
+
+function normalizeCodexRequirementValues(
+  values: unknown[] | undefined,
+  normalize: (value: unknown) => string | null,
+): string[] | undefined {
+  if (!values) {
+    return undefined;
+  }
+
+  const normalized = values
+    .map((value) => normalize(value))
+    .filter((value): value is string => Boolean(value));
+
+  return Array.from(new Set(normalized));
+}
+
+function normalizeConfigSelection(
+  value: unknown,
+  normalize: (candidate: unknown) => string | null,
+  fallbackValue: string,
+  allowedValues?: string[],
+): string | undefined {
+  const normalized = normalize(value);
+  const hasConfiguredValue = typeof value === 'string'
+    ? value.trim().length > 0
+    : value !== undefined && value !== null;
+
+  if (!allowedValues) {
+    if (normalized) {
+      return normalized;
+    }
+    return hasConfiguredValue ? fallbackValue : undefined;
+  }
+
+  if (normalized && allowedValues.includes(normalized)) {
+    return normalized;
+  }
+  if (!hasConfiguredValue) {
+    return undefined;
+  }
+  if (allowedValues.includes(fallbackValue)) {
+    return fallbackValue;
+  }
+
+  return allowedValues[0];
+}
+
+function resolveOptionDefault(
+  options: Array<{ value: string; label: string }>,
+  fallbackValue: string,
+): string {
+  if (options.some((option) => option.value === fallbackValue)) {
+    return fallbackValue;
+  }
+
+  return options[0]?.value || '';
+}
+
+function normalizeCodexEnumValue(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[_\s]+/g, '-')
+    .toLowerCase();
+
+  return normalized || null;
 }
 
 function isApprovalPolicy(value: unknown): value is string {

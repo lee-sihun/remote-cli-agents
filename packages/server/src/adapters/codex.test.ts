@@ -134,6 +134,9 @@ describe('CodexAdapter', () => {
       if (request.method === 'initialize') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
       }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
       if (request.method === 'model/list') {
         proc.stdout.write(`${JSON.stringify({
           id: request.id,
@@ -196,6 +199,180 @@ describe('CodexAdapter', () => {
     );
   });
 
+  it('filters Codex approval and sandbox options from configRequirements/read', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    wireCodexRpc(proc, (request) => {
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            requirements: {
+              allowedApprovalPolicies: ['onRequest', 'unlessTrusted'],
+              allowedSandboxModes: ['readOnly', 'workspaceWrite'],
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+
+    expect(adapter.getOptions()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'approvalMode',
+        defaultValue: 'on-request',
+        options: [
+          { value: 'on-request', label: 'On Request' },
+          { value: 'untrusted', label: 'Unless Trusted' },
+        ],
+      }),
+      expect.objectContaining({
+        key: 'sandboxMode',
+        defaultValue: 'workspace-write',
+        options: [
+          { value: 'workspace-write', label: 'Workspace Write' },
+          { value: 'read-only', label: 'Read Only' },
+        ],
+      }),
+    ]));
+  });
+
+  it('clamps disallowed approval and sandbox values to the allowed Codex requirements', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    wireCodexRpc(proc, (request) => {
+      requests.push(request);
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            requirements: {
+              allowedApprovalPolicies: ['onRequest', 'unlessTrusted'],
+              allowedSandboxModes: ['readOnly', 'workspaceWrite'],
+            },
+          },
+        })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-clamped',
+              path: 'C:/workspace',
+              cwd: 'C:/workspace',
+              title: 'Clamped thread',
+              preview: 'Clamped thread',
+              createdAt: 1,
+              updatedAt: 2,
+            },
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-clamped',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({
+      type: 'codex',
+      cwd: 'C:/workspace',
+      approvalMode: 'never',
+      sandboxMode: 'danger-full-access',
+    });
+    adapter.sendMessage('client-thread-clamped', 'clamp me');
+
+    await flushStreamEvents();
+
+    expect(requests.find((request) => request.method === 'thread/start')?.params).toEqual(expect.objectContaining({
+      approvalPolicy: 'on-request',
+      sandbox: 'read-only',
+    }));
+  });
+
+  it('does not force Codex approval and sandbox params when they were not configured', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+    const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    wireCodexRpc(proc, (request) => {
+      requests.push(request);
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-default-config',
+              path: 'C:/workspace',
+              cwd: 'C:/workspace',
+              title: 'Default config thread',
+              preview: 'Default config thread',
+              createdAt: 1,
+              updatedAt: 2,
+            },
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-default-config',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('client-thread-default-config', 'leave defaults alone');
+
+    await flushStreamEvents();
+
+    expect(requests.find((request) => request.method === 'thread/start')?.params).not.toHaveProperty('approvalPolicy');
+    expect(requests.find((request) => request.method === 'thread/start')?.params).not.toHaveProperty('sandbox');
+  });
+
   it('starts a new thread with the remote Codex thread id and persists the assistant reply', async () => {
     const proc = createFakeChildProcess();
     childProcessMock.spawn.mockReturnValue(proc);
@@ -207,6 +384,9 @@ describe('CodexAdapter', () => {
 
       if (request.method === 'initialize') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
       }
       if (request.method === 'model/list') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
@@ -381,6 +561,9 @@ describe('CodexAdapter', () => {
       if (request.method === 'initialize') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
       }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
       if (request.method === 'model/list') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
       }
@@ -549,6 +732,9 @@ describe('CodexAdapter', () => {
       if (request.method === 'initialize') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
       }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
       if (request.method === 'model/list') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
       }
@@ -650,6 +836,9 @@ describe('CodexAdapter', () => {
       if (request.method === 'initialize') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
       }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
       if (request.method === 'model/list') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
       }
@@ -723,6 +912,9 @@ describe('CodexAdapter', () => {
       if (request.method === 'initialize') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
       }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
       if (request.method === 'model/list') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
       }
@@ -792,6 +984,9 @@ describe('CodexAdapter', () => {
       requests.push({ method: request.method, params: request.params as Record<string, unknown> });
       if (request.method === 'initialize') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
       }
       if (request.method === 'model/list') {
         proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
@@ -896,6 +1091,9 @@ describe('CodexAdapter', () => {
       if (typeof request.id === 'number' && typeof request.method === 'string') {
         if (request.method === 'initialize') {
           proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+        }
+        if (request.method === 'configRequirements/read') {
+          proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
         }
         if (request.method === 'model/list') {
           proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
