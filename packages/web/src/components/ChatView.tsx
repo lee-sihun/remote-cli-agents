@@ -14,13 +14,15 @@ import {
   Loader2,
   Clock,
 } from 'lucide-react';
-import type { AgentMessage, ToolCall } from '../lib/protocol';
+import type { AgentMessage, AgentType, ToolCall } from '../lib/protocol';
+import AgentLogo from './AgentLogo';
 import CodeBlock from './CodeBlock';
 
 interface ChatViewProps {
   messages: AgentMessage[];
   streamingContent: string | null;
   activeToolCalls?: ToolCall[];
+  activeAgent: AgentType | null;
 }
 
 // ─── Tool Call Card ───
@@ -303,6 +305,7 @@ export default function ChatView({
   messages,
   streamingContent,
   activeToolCalls,
+  activeAgent,
 }: ChatViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -340,7 +343,9 @@ export default function ChatView({
         className="flex-1 flex items-center justify-center p-4"
       >
         <div className="text-center">
-          <Bot size={48} className="mx-auto text-(--text-muted) mb-4" />
+          {activeAgent && (
+            <AgentLogo agent={activeAgent} size={48} className="mx-auto text-(--text-muted) mb-4" />
+          )}
           <h2 className="text-lg font-medium text-(--text-secondary) mb-1">
             Start a conversation
           </h2>

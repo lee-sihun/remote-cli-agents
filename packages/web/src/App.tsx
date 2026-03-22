@@ -489,7 +489,6 @@ export default function App() {
         <div className="p-3 border-b border-(--border)">
           <AgentSelector
             agents={store.agents}
-            statuses={store.agentStatuses}
             activeAgent={store.activeAgent}
             onSelect={handleSelectAgent}
           />
@@ -615,6 +614,7 @@ export default function App() {
               messages={currentMessages}
               streamingContent={currentStreaming}
               activeToolCalls={currentToolCalls}
+              activeAgent={store.activeAgent}
             />
 
             {/* 실행 중 오버레이 (채팅 영역 하단) */}

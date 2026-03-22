@@ -1,18 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUp, Square, Loader2, Zap, ChevronDown, Check } from 'lucide-react';
+import { ArrowUp, Square, Loader2, ChevronDown, Check } from 'lucide-react';
 import type { AgentOptionDef, ContextUsage } from '../lib/protocol';
 
 // ─── 인라인 셀렉트 (입력창 내부용) ───
 
 interface InlineSelectProps {
-  icon?: React.ReactNode;
   options: { value: string; label: string }[];
   testId?: string;
   value: string;
   onChange: (value: string) => void;
 }
 
-const InlineSelect = ({ icon, options, testId, value, onChange }: InlineSelectProps) => {
+const InlineSelect = ({ options, testId, value, onChange }: InlineSelectProps) => {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const label = options.find((o) => o.value === value)?.label || 'Select';
@@ -41,7 +40,6 @@ const InlineSelect = ({ icon, options, testId, value, onChange }: InlineSelectPr
             : 'text-(--text-muted) hover:bg-(--bg-tertiary)'
         }`}
       >
-        {icon}
         <span>{label}</span>
         <ChevronDown
           size={10}
@@ -198,7 +196,6 @@ const MessageInput = ({
                 return (
                   <InlineSelect
                     key={opt.key}
-                    icon={opt.key === 'model' ? <Zap size={12} /> : undefined}
                     options={opt.options}
                     testId={`input-option-${opt.key}`}
                     value={settingValues[opt.key] || opt.defaultValue || ''}

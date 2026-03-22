@@ -1,33 +1,16 @@
 import React from 'react';
-import { Bot, ChevronDown } from 'lucide-react';
-import type { AgentInfo, AgentStatus, AgentType } from '../lib/protocol';
+import { ChevronDown } from 'lucide-react';
+import type { AgentInfo, AgentType } from '../lib/protocol';
+import AgentLogo, { getAgentBrandLabel } from './AgentLogo';
 
 interface AgentSelectorProps {
   agents: AgentInfo[];
-  statuses: Map<AgentType, AgentStatus>;
   activeAgent: AgentType | null;
   onSelect: (agent: AgentType) => void;
 }
 
-function statusDot(status?: AgentStatus): string {
-  if (!status) return 'bg-(--text-muted)';
-  switch (status.state) {
-    case 'idle':
-      return 'bg-(--success)';
-    case 'running':
-      return 'bg-(--warning) animate-pulse';
-    case 'waiting_approval':
-      return 'bg-(--warning)';
-    case 'error':
-      return 'bg-(--error)';
-    default:
-      return 'bg-(--text-muted)';
-  }
-}
-
 export default function AgentSelector({
   agents,
-  statuses,
   activeAgent,
   onSelect,
 }: AgentSelectorProps) {
@@ -46,7 +29,6 @@ export default function AgentSelector({
   }, []);
 
   const active = agents.find((a) => a.type === activeAgent);
-  const activeStatus = activeAgent ? statuses.get(activeAgent) : undefined;
 
   return (
     <div ref={ref} className="relative">
@@ -55,15 +37,14 @@ export default function AgentSelector({
         data-testid="agent-selector-button"
         className="flex items-center gap-2 px-3 py-2 rounded-lg bg-(--bg-secondary) border border-(--border) hover:bg-(--bg-tertiary) transition-colors w-full"
       >
-        <Bot size={16} className="text-(--accent)" />
+        {activeAgent ? (
+          <AgentLogo agent={activeAgent} size={16} className="text-(--accent) shrink-0" />
+        ) : (
+          <div className="w-4 h-4 shrink-0" />
+        )}
         <span className="flex-1 text-left text-sm font-medium truncate">
           {active ? active.name : 'Select Agent'}
         </span>
-        {active && (
-          <span
-            className={`w-2 h-2 rounded-full shrink-0 ${statusDot(activeStatus)}`}
-          />
-        )}
         <ChevronDown
           size={14}
           className={`text-(--text-muted) transition-transform ${open ? 'rotate-180' : ''}`}
@@ -73,7 +54,6 @@ export default function AgentSelector({
       {open && (
         <div className="absolute top-full left-0 right-0 mt-1 bg-(--bg-secondary) border border-(--border) rounded-lg shadow-xl z-50 overflow-hidden animate-fade-in">
           {agents.map((agent) => {
-            const s = statuses.get(agent.type);
             return (
               <button
                 key={agent.type}
@@ -88,16 +68,13 @@ export default function AgentSelector({
                     : ''
                 } ${!agent.available ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${statusDot(s)}`}
-                />
+                <AgentLogo agent={agent.type} size={16} className="text-(--accent) shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">
                     {agent.name}
                   </div>
                   <div className="text-xs text-(--text-muted) truncate">
-                    {agent.description}
-                    {s?.model ? ` - ${s.model}` : ''}
+                    {getAgentBrandLabel(agent.type)}
                   </div>
                 </div>
                 {!agent.available && (
