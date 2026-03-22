@@ -41,7 +41,7 @@
     "coding-agent"
   ],
   "optionalDependencies": {
-    "cloudflared": "^1.0.0"
+    "cloudflared": "^0.7.1"
   },
   "license": "MIT"
 }
