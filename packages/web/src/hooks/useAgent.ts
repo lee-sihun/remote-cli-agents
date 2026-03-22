@@ -558,7 +558,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           case 'status_change': {
             const statuses = new Map(state.agentStatuses);
             statuses.set(event.agentType, event.status);
-            set({ agentStatuses: statuses });
+            const threads = new Map(state.threads);
+            const activeThreadId = event.status.activeThread;
+            if (activeThreadId) {
+              const agentThreads = [...(threads.get(event.agentType) || [])];
+              const threadIndex = agentThreads.findIndex((thread) => thread.id === activeThreadId);
+              if (threadIndex >= 0) {
+                const updated = [...agentThreads];
+                updated[threadIndex] = {
+                  ...updated[threadIndex],
+                  model: event.status.model || updated[threadIndex].model,
+                  contextUsage: event.status.contextUsage || updated[threadIndex].contextUsage,
+                };
+                threads.set(event.agentType, updated);
+              }
+            }
+            set({ agentStatuses: statuses, threads });
             break;
           }
 

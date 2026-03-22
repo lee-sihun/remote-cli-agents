@@ -388,4 +388,46 @@ describe('useAgentStore', () => {
     expect(useAgentStore.getState().streamingContent.get('thread-2')).toBe('existing stream');
     expect(useAgentStore.getState().activeThread).toBe('thread-2');
   });
+
+  it('persists model and context usage onto the active thread summary from status_change events', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      threads: new Map([['claude', [{
+        id: 'thread-1',
+        agentType: 'claude',
+        title: 'Thread 1',
+        messageCount: 2,
+        createdAt: 1,
+        updatedAt: 2,
+      }]]]),
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'status_change',
+        agentType: 'claude',
+        status: {
+          agent: 'claude',
+          state: 'running',
+          activeThread: 'thread-1',
+          model: 'claude-sonnet',
+          contextUsage: {
+            used: 185,
+            total: 1_000_000,
+            percentage: 0,
+          },
+        },
+      },
+    });
+
+    const thread = useAgentStore.getState().threads.get('claude')?.[0];
+    expect(thread?.model).toBe('claude-sonnet');
+    expect(thread?.contextUsage).toEqual({
+      used: 185,
+      total: 1_000_000,
+      percentage: 0,
+    });
+  });
 });

@@ -831,6 +831,9 @@ export class ClaudeAdapter implements AgentAdapter {
       if (!threadInfo.model) {
         threadInfo.model = pickClaudeModelFromUsage(sdkMessage.modelUsage);
       }
+      if (this.status.activeThread === threadId) {
+        this.updateStatus('running', threadId, threadInfo);
+      }
 
       this.streamingBuffers.delete(threadId);
 
