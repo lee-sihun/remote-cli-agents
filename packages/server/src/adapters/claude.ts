@@ -1234,10 +1234,17 @@ function pickClaudeModelFromUsage(modelUsage: Record<string, unknown> | undefine
 function toClaudeUsageSummary(
   result: SDKResultMessage,
 ): { inputTokens: number; outputTokens: number } | undefined {
-  const inputTokens = (result.usage.input_tokens || 0)
-    + (result.usage.cache_read_input_tokens || 0)
-    + (result.usage.cache_creation_input_tokens || 0);
-  const outputTokens = result.usage.output_tokens || 0;
+  const iterationUsage = readClaudeUsageIterations(result);
+  const totals = iterationUsage.length > 0
+    ? iterationUsage.reduce(
+      (sum, usage) => ({
+        inputTokens: sum.inputTokens + usage.inputTokens,
+        outputTokens: sum.outputTokens + usage.outputTokens,
+      }),
+      { inputTokens: 0, outputTokens: 0 },
+    )
+    : readClaudeTopLevelUsage(result);
+  const { inputTokens, outputTokens } = totals;
 
   if (inputTokens === 0 && outputTokens === 0) {
     return undefined;
@@ -1250,12 +1257,12 @@ function toClaudeContextUsage(result: SDKResultMessage): ContextUsage | undefine
   const primaryModel = pickClaudeModelFromUsage(result.modelUsage);
   const modelUsage = primaryModel ? readRecord(result.modelUsage as Record<string, unknown>, primaryModel) : undefined;
   const contextWindow = readNumber(modelUsage || {}, 'contextWindow');
-  const inputTokens = (
-    (readNumber(modelUsage || {}, 'inputTokens') || result.usage.input_tokens || 0)
-    + (readNumber(modelUsage || {}, 'cacheReadInputTokens') || result.usage.cache_read_input_tokens || 0)
-    + (readNumber(modelUsage || {}, 'cacheCreationInputTokens') || result.usage.cache_creation_input_tokens || 0)
-  );
-  const outputTokens = readNumber(modelUsage || {}, 'outputTokens') || (result.usage.output_tokens || 0);
+  const effectiveUsage = readClaudeEffectiveIterationUsage(result)
+    || readClaudeModelUsage(modelUsage)
+    || readClaudeTopLevelUsage(result);
+
+  const inputTokens = effectiveUsage.inputTokens;
+  const outputTokens = effectiveUsage.outputTokens;
   const totalTokens = inputTokens + outputTokens;
 
   if (!contextWindow || contextWindow <= 0) {
@@ -1266,6 +1273,91 @@ function toClaudeContextUsage(result: SDKResultMessage): ContextUsage | undefine
     used: totalTokens,
     total: contextWindow,
     percentage: Math.min(100, Math.round((totalTokens / contextWindow) * 100)),
+  };
+}
+
+function readClaudeEffectiveIterationUsage(
+  result: SDKResultMessage,
+): { inputTokens: number; outputTokens: number } | undefined {
+  const iterations = readClaudeUsageIterations(result);
+  if (iterations.length === 0) {
+    return undefined;
+  }
+
+  for (let index = iterations.length - 1; index >= 0; index -= 1) {
+    const iteration = iterations[index];
+    if (iteration.type !== 'compaction') {
+      return {
+        inputTokens: iteration.inputTokens,
+        outputTokens: iteration.outputTokens,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function readClaudeUsageIterations(
+  result: SDKResultMessage,
+): Array<{ type?: string; inputTokens: number; outputTokens: number }> {
+  const usageRecord = result.usage as unknown as Record<string, unknown>;
+  const iterations = readArray(usageRecord, 'iterations');
+  if (!iterations) {
+    return [];
+  }
+
+  return iterations.flatMap((iteration): Array<{ type?: string; inputTokens: number; outputTokens: number }> => {
+    if (!isRecord(iteration)) {
+      return [];
+    }
+
+    return [{
+      type: readString(iteration, 'type'),
+      inputTokens: readSnakeCaseUsage(iteration).inputTokens,
+      outputTokens: readNumber(iteration, 'output_tokens') || 0,
+    }];
+  });
+}
+
+function readClaudeTopLevelUsage(
+  result: SDKResultMessage,
+): { inputTokens: number; outputTokens: number } {
+  return readSnakeCaseUsage(result.usage as unknown as Record<string, unknown>);
+}
+
+function readClaudeModelUsage(
+  usage: Record<string, unknown> | undefined,
+): { inputTokens: number; outputTokens: number } | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  const counts = {
+    inputTokens: (
+      (readNumber(usage, 'inputTokens') || 0)
+      + (readNumber(usage, 'cacheReadInputTokens') || 0)
+      + (readNumber(usage, 'cacheCreationInputTokens') || 0)
+    ),
+    outputTokens: readNumber(usage, 'outputTokens') || 0,
+  };
+
+  if (counts.inputTokens === 0 && counts.outputTokens === 0) {
+    return undefined;
+  }
+
+  return counts;
+}
+
+function readSnakeCaseUsage(
+  usage: Record<string, unknown>,
+): { inputTokens: number; outputTokens: number } {
+  return {
+    inputTokens: (
+      (readNumber(usage, 'input_tokens') || 0)
+      + (readNumber(usage, 'cache_read_input_tokens') || 0)
+      + (readNumber(usage, 'cache_creation_input_tokens') || 0)
+    ),
+    outputTokens: readNumber(usage, 'output_tokens') || 0,
   };
 }
 

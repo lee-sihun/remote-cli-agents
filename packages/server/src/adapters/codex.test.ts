@@ -700,6 +700,211 @@ describe('CodexAdapter', () => {
     ]));
   });
 
+  it('clears stale Codex context usage after context compaction when no refreshed usage arrives', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+
+    wireCodexRpc(proc, (request) => {
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-compact',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-compact',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-compact', 'continue', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-compact',
+        turn: {
+          id: 'turn-compact',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-compact',
+        turnId: 'turn-compact',
+        tokenUsage: {
+          total: { totalTokens: 900 },
+          modelContextWindow: 1000,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-compact',
+        item: { id: 'compact-1', type: 'contextCompaction' },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-compact',
+        turn: {
+          id: 'turn-compact',
+          status: 'completed',
+          error: null,
+        },
+      },
+    })}\n`);
+
+    await flushStreamEvents();
+
+    const threads = await adapter.getThreads();
+    expect(threads[0]?.contextUsage).toBeUndefined();
+  });
+
+  it('keeps refreshed Codex context usage after context compaction when a new usage update arrives', async () => {
+    const proc = createFakeChildProcess();
+    childProcessMock.spawn.mockReturnValue(proc);
+
+    wireCodexRpc(proc, (request) => {
+      if (request.method === 'initialize') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        proc.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-compact-fresh',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        proc.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-compact-fresh',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-compact-fresh', 'continue', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-compact-fresh',
+        turn: {
+          id: 'turn-compact-fresh',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-compact-fresh',
+        turnId: 'turn-compact-fresh',
+        tokenUsage: {
+          total: { totalTokens: 900 },
+          modelContextWindow: 1000,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-compact-fresh',
+        item: { id: 'compact-2', type: 'contextCompaction' },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-compact-fresh',
+        turnId: 'turn-compact-fresh',
+        tokenUsage: {
+          total: { totalTokens: 220 },
+          modelContextWindow: 1000,
+        },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-compact-fresh',
+        turn: {
+          id: 'turn-compact-fresh',
+          status: 'completed',
+          error: null,
+        },
+      },
+    })}\n`);
+
+    await flushStreamEvents();
+
+    const threads = await adapter.getThreads();
+    expect(threads[0]?.contextUsage).toEqual({
+      used: 220,
+      total: 1000,
+      percentage: 22,
+    });
+  });
+
   it('resumes stored threads before sending and uses the active turn id for interrupts', async () => {
     storeState.threads.set('codex', [{
       id: 'client-thread-resume',

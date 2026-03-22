@@ -586,6 +586,73 @@ describe('ClaudeAdapter', () => {
     expect(adapter.getStatus().state).toBe('idle');
   });
 
+  it('uses compaction iterations for Claude billed usage and effective context usage', async () => {
+    const runtime = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtime);
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-compact', 'keep going');
+    await flushAsync();
+
+    runtime.push(createSystemInit('session-compact', 'claude-sonnet'));
+    runtime.push(createResult({
+      usage: {
+        input_tokens: 23_000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: 1_000,
+        iterations: [
+          {
+            type: 'compaction',
+            input_tokens: 180_000,
+            output_tokens: 3_500,
+          },
+          {
+            type: 'message',
+            input_tokens: 23_000,
+            output_tokens: 1_000,
+          },
+        ],
+      },
+      modelUsage: {
+        'claude-sonnet': {
+          inputTokens: 203_000,
+          outputTokens: 4_500,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          webSearchRequests: 0,
+          costUSD: 0.12,
+          contextWindow: 200_000,
+          maxOutputTokens: 8192,
+        },
+      },
+    }));
+    runtime.finish();
+    await flushAsync();
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed.at(-1)?.message.usage).toEqual({
+      inputTokens: 203_000,
+      outputTokens: 4_500,
+    });
+
+    const threads = await adapter.getThreads();
+    expect(threads[0]?.contextUsage).toEqual({
+      used: 24_000,
+      total: 200_000,
+      percentage: 12,
+    });
+  });
+
   it('closes the previous query and ignores late events when the same thread restarts', async () => {
     const runtimeA = new FakeQuery();
     const runtimeB = new FakeQuery();
