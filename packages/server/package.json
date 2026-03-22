@@ -40,5 +40,8 @@
     "gemini",
     "coding-agent"
   ],
+  "optionalDependencies": {
+    "cloudflared": "^1.0.0"
+  },
   "license": "MIT"
 }

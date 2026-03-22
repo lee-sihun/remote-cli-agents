@@ -4,18 +4,21 @@ import type { QRPayload } from '@rca/shared';
 import { createBridgeServer, type ServerConfig } from './server.js';
 import { sessionManager } from './session.js';
 import { printQR } from './qr.js';
+import { startQuickTunnel } from './tunnel.js';
 
 // CLI 인자 파싱
 function parseArgs(argv: string[]): {
   port: number;
   relay: string | null;
   noRelay: boolean;
+  noTunnel: boolean;
   cwd: string;
   command: string;
 } {
   let port = 9470;
   let relay: string | null = null;
   let noRelay = false;
+  let noTunnel = false;
   let cwd = process.cwd();
   let command = 'up';
 
@@ -53,6 +56,11 @@ function parseArgs(argv: string[]): {
       continue;
     }
 
+    if (arg === '--no-tunnel') {
+      noTunnel = true;
+      continue;
+    }
+
     if (arg === '--cwd') {
       cwd = argv[++i] || process.cwd();
       continue;
@@ -64,7 +72,7 @@ function parseArgs(argv: string[]): {
     }
   }
 
-  return { port, relay, noRelay, cwd, command };
+  return { port, relay, noRelay, noTunnel, cwd, command };
 }
 
 // LAN IP 주소 조회
@@ -187,15 +195,42 @@ export async function main(argv: string[] = process.argv): Promise<void> {
     connectToRelay(args.relay, sessionId, token);
   }
 
+  // Quick Tunnel 시작
+  // --relay 지정 시 터널 스킵, --no-relay / --no-tunnel 도 스킵
+  // CLOUDFLARE_TUNNEL_URL 환경변수로 정식 터널 URL 직접 지정 가능
+  let tunnelCleanup: (() => void) | null = null;
+  const envTunnelUrl = process.env.CLOUDFLARE_TUNNEL_URL;
+
+  if (envTunnelUrl && !args.relay && !args.noRelay && !args.noTunnel) {
+    payload.directUrl = envTunnelUrl;
+    payload.relay = undefined;
+    console.log(`  Tunnel: ${envTunnelUrl}`);
+  } else if (!args.relay && !args.noRelay && !args.noTunnel) {
+    console.log('  Starting Cloudflare tunnel...');
+    const tunnel = await startQuickTunnel(args.port);
+    if (tunnel) {
+      payload.directUrl = tunnel.url;
+      payload.relay = undefined;
+      tunnelCleanup = tunnel.cleanup;
+      console.log(`  Tunnel: ${tunnel.url}`);
+    } else {
+      // 터널 실패 → relay 제거하여 QR 스캔 시 LAN 직접 연결로 fallback
+      payload.relay = undefined;
+      console.log('  Tunnel unavailable, using LAN mode');
+    }
+  }
+
+  console.log('');
   console.log('  Scan this QR code to connect:');
   await printQR(payload);
 
-  console.log(`  Or open: ${directUrl}`);
+  console.log(`  Or open: ${payload.directUrl}`);
   console.log('');
 
   // 종료 처리
   const shutdown = async () => {
     console.log('\n  Shutting down...');
+    tunnelCleanup?.();
     await server.close();
     process.exit(0);
   };

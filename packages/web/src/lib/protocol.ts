@@ -48,17 +48,20 @@ export function parseQRPayload(input: string): import('@rca/shared').QRPayload |
 
 export function buildWebSocketUrl(payload: import('@rca/shared').QRPayload): string {
   if (payload.relay) {
-    // Connect via relay
+    // relay를 통한 연결
     const url = new URL(payload.relay);
     url.searchParams.set('session', payload.sessionId);
     url.searchParams.set('token', payload.token);
     url.searchParams.set('role', 'client');
     return url.toString();
   }
-  // Direct connection
-  const url = new URL(payload.directUrl);
-  url.searchParams.set('token', payload.token);
-  return url.toString();
+  // 직접 연결 (http/https → ws/wss 변환, /ws 경로)
+  const base = new URL(payload.directUrl);
+  const wsProtocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = new URL(`${wsProtocol}//${base.host}/ws`);
+  wsUrl.searchParams.set('token', payload.token);
+  wsUrl.searchParams.set('sessionId', payload.sessionId);
+  return wsUrl.toString();
 }
 
 export function generateThreadId(): string {
