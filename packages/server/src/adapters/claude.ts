@@ -1,54 +1,36 @@
-import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { createInterface } from 'node:readline';
-import { tmpdir } from 'node:os';
+import {
+  createSdkMcpServer,
+  query,
+  tool,
+  type ModelInfo,
+  type PermissionMode,
+  type Query as ClaudeSdkQuery,
+  type SDKAssistantMessage,
+  type SDKMessage,
+  type SDKResultMessage,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentConfig,
   AgentEvent,
-  AgentStatus,
   AgentMessage,
-  ToolCall,
-  ThreadSummary,
+  AgentOptionDef,
+  AgentStatus,
   ContextUsage,
+  ThreadSummary,
+  ToolCall,
 } from '@rca/shared';
+import { CLAUDE_OPTIONS } from '@rca/shared';
+import { z } from 'zod';
 import type { AgentAdapter, AgentEventHandler, ThreadStreamingState } from './types.js';
 import * as store from '../store.js';
-import { terminateChildProcess } from '../process.js';
-import { debugLog, debugError } from '../logger.js';
+import { debugError, debugLog } from '../logger.js';
 
-// Claude stream-json 이벤트 타입
-interface ClaudeStreamEvent {
-  type: string;
-  subtype?: string;
-  text?: string;
-  content?: string;
-  tool_name?: string;
-  tool_use_id?: string;
-  tool_input?: Record<string, unknown>;
-  result?: string;
-  session_id?: string;
-  cost_usd?: number;
-  duration_ms?: number;
-  model?: string;
-  total_cost_usd?: number;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-  };
-  modelUsage?: Record<string, {
-    contextWindow?: number;
-  }>;
-  [key: string]: unknown;
-}
-
-// 스레드 정보
 interface ThreadInfo {
   id: string;
-  process: ChildProcess;
+  query?: ClaudeSdkQuery;
   runId?: string;
   sessionId?: string;
   model?: string;
@@ -61,7 +43,6 @@ interface ThreadInfo {
   timeout?: ReturnType<typeof setTimeout>;
   contextUsage?: ContextUsage;
   config?: AgentConfig;
-  permissionBridgeConfigPath?: string;
 }
 
 interface ClaudeAdapterOptions {
@@ -85,7 +66,25 @@ interface PermissionDecision {
   updatedPermissions?: unknown[];
 }
 
-const CLAUDE_PERMISSION_PROMPT_TOOL = 'mcp__rca-permission__rca_approve_permission';
+type ClaudeSystemMessage = Extract<SDKMessage, { type: 'system' }>;
+
+interface ClaudeStreamState {
+  streamedText: string;
+  pendingText: string;
+  pendingReasoning: string;
+  resultReceived: boolean;
+  stderrEmitted: boolean;
+  emittedAssistantMessages: number;
+  lastToolCallId: string | null;
+  pendingToolCalls: Map<string, ToolCall>;
+  toolIndexes: Map<number, string>;
+  toolInputBuffers: Map<string, string>;
+  resultMeta: {
+    model?: string;
+    costUsd?: number;
+    usage?: { inputTokens: number; outputTokens: number };
+  };
+}
 
 export class ClaudeAdapter implements AgentAdapter {
   readonly name = 'Claude Code';
@@ -95,11 +94,11 @@ export class ClaudeAdapter implements AgentAdapter {
   private eventHandlers: AgentEventHandler[] = [];
   private config: AgentConfig | null = null;
   private readonly options: ClaudeAdapterOptions;
+  private availableModels: ModelInfo[] = [];
   private status: AgentStatus = {
     agent: 'claude',
     state: 'idle',
   };
-  // per-thread 스트리밍 버퍼 (재연결 동기화용)
   private streamingBuffers = new Map<string, { content: string; toolCalls: ToolCall[] }>();
   private pendingApprovals = new Map<string, PendingApproval>();
 
@@ -109,46 +108,19 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async start(config: AgentConfig): Promise<void> {
     this.config = config;
-
-    // 저장된 스레드 복원 (모든 워크스페이스에서 로드)
-    const workspaces = store.loadWorkspaces();
-    const workspaceIds = workspaces.length > 0
-      ? workspaces.map((ws) => ws.id)
-      : ['default'];
-
-    for (const wsId of workspaceIds) {
-      const saved = store.loadThreads('claude', wsId);
-      for (const t of saved) {
-        if (!this.threads.has(t.id)) {
-          this.threads.set(t.id, {
-            id: t.id,
-            process: null as unknown as ChildProcess,
-            sessionId: t.sessionId,
-            model: t.model,
-            title: t.title,
-            messages: store.loadMessages(t.id),
-            createdAt: t.createdAt,
-            updatedAt: t.updatedAt,
-            cwd: t.cwd,
-            workspaceId: wsId,
-            contextUsage: t.contextUsage,
-            config: t.config,
-          });
-        }
-      }
-    }
+    this.restoreStoredThreads();
+    await this.refreshCapabilities(config);
   }
 
   async stop(): Promise<void> {
-    // 활성 프로세스만 종료 (스레드 데이터는 유지)
     for (const [, thread] of this.threads) {
-      if (thread.timeout) clearTimeout(thread.timeout);
-      this.rejectPendingApprovalsForThread(thread.id, 'Claude session stopped before the permission request was answered.');
-      this.cleanupPermissionBridgeConfig(thread);
-      if (this.isProcessActive(thread.process)) {
-        terminateChildProcess(thread.process);
+      if (thread.timeout) {
+        clearTimeout(thread.timeout);
       }
+      this.rejectPendingApprovalsForThread(thread.id, 'Claude session stopped before the permission request was answered.');
+      this.closeThreadQuery(thread);
     }
+
     this.updateStatus('idle');
   }
 
@@ -161,20 +133,23 @@ export class ClaudeAdapter implements AgentAdapter {
     });
   }
 
+  getOptions(): AgentOptionDef[] {
+    return buildClaudeOptionDefs(this.availableModels);
+  }
+
   sendMessage(threadId: string | undefined, message: string, config?: AgentConfig): void {
     const tid = threadId || randomUUID();
     const existingThread = this.threads.get(tid);
 
-    // 기존 프로세스가 실행 중이면 종료 후 재시작
-    if (existingThread && this.isProcessActive(existingThread.process)) {
-      debugLog(`[claude] Killing existing process for thread ${tid} before new message`);
-      if (existingThread.timeout) clearTimeout(existingThread.timeout);
+    if (existingThread && this.isQueryActive(existingThread)) {
+      debugLog(`[claude] Closing existing query for thread ${tid} before new message`);
+      if (existingThread.timeout) {
+        clearTimeout(existingThread.timeout);
+      }
       this.rejectPendingApprovalsForThread(tid, 'Claude session restarted before the permission request was answered.');
-      this.cleanupPermissionBridgeConfig(existingThread);
-      terminateChildProcess(existingThread.process);
+      this.closeThreadQuery(existingThread);
     }
 
-    // 기존 스레드 진입 시 in-memory contextUsage 복원
     if (existingThread?.contextUsage) {
       this.status.contextUsage = existingThread.contextUsage;
     }
@@ -183,43 +158,42 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     const threadConfig = this.resolveThreadConfig(existingThread, config);
-
-    if (existingThread?.sessionId) {
-      debugLog(`[claude] Resuming session ${existingThread.sessionId} for thread ${tid}`);
-      this.spawnClaude(tid, message, threadConfig, existingThread.sessionId, existingThread.cwd);
-    } else {
-      debugLog(`[claude] Starting new session for thread ${tid}`);
-      this.spawnClaude(tid, message, threadConfig, undefined, threadConfig.cwd);
-    }
+    void this.runClaudeQuery(tid, message, threadConfig);
   }
 
   interrupt(threadId: string): void {
     const thread = this.threads.get(threadId);
-    if (thread && this.isProcessActive(thread.process)) {
-      terminateChildProcess(thread.process, 'SIGINT');
+    if (!thread?.query) {
+      return;
     }
+
+    void thread.query.interrupt().catch((error) => {
+      debugError('[claude] Failed to interrupt query', error);
+    });
   }
 
-  approve(threadId: string, _toolCallId: string, approved: boolean): void {
-    const pending = this.pendingApprovals.get(_toolCallId);
-    if (!pending || pending.threadId !== threadId) return;
+  approve(threadId: string, toolCallId: string, approved: boolean): void {
+    const pending = this.pendingApprovals.get(toolCallId);
+    if (!pending || pending.threadId !== threadId) {
+      return;
+    }
 
-    this.pendingApprovals.delete(_toolCallId);
+    this.pendingApprovals.delete(toolCallId);
     pending.resolve(
       approved
         ? {
           behavior: 'allow',
-          toolUseID: _toolCallId,
+          toolUseID: toolCallId,
         }
         : {
           behavior: 'deny',
           message: 'User rejected the permission request.',
-          toolUseID: _toolCallId,
+          toolUseID: toolCallId,
         },
     );
 
     const thread = this.threads.get(threadId);
-    if (thread && this.isProcessActive(thread.process)) {
+    if (thread && this.isQueryActive(thread)) {
       this.updateStatus('running', threadId, thread);
     } else {
       this.updateStatus('idle');
@@ -233,7 +207,7 @@ export class ClaudeAdapter implements AgentAdapter {
     toolUseId: string,
   ): Promise<PermissionDecision> {
     const thread = this.threads.get(threadId);
-    if (!thread || !this.isProcessActive(thread.process)) {
+    if (!thread || !this.isQueryActive(thread)) {
       return Promise.resolve({
         behavior: 'deny',
         message: 'Claude session is not running.',
@@ -296,25 +270,25 @@ export class ClaudeAdapter implements AgentAdapter {
   async getThreads(workspaceId?: string): Promise<ThreadSummary[]> {
     const all = Array.from(this.threads.values());
     const filtered = workspaceId
-      ? all.filter((t) => (t.workspaceId || 'default') === workspaceId)
+      ? all.filter((thread) => (thread.workspaceId || 'default') === workspaceId)
       : all;
 
-    return filtered.map((t) => ({
-      id: t.id,
-      agentType: 'claude' as const,
-      title: t.title,
-      lastMessage: t.messages.length > 0
-        ? t.messages[t.messages.length - 1].content.slice(0, 100)
+    return filtered.map((thread) => ({
+      id: thread.id,
+      agentType: 'claude',
+      title: thread.title,
+      lastMessage: thread.messages.length > 0
+        ? thread.messages[thread.messages.length - 1].content.slice(0, 100)
         : undefined,
-      messageCount: t.messages.length,
-      createdAt: t.createdAt,
-      updatedAt: t.updatedAt,
-      cwd: t.cwd,
-      workspaceId: t.workspaceId,
-      model: t.model,
-      sessionId: t.sessionId,
-      contextUsage: t.contextUsage,
-      config: t.config,
+      messageCount: thread.messages.length,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+      cwd: thread.cwd,
+      workspaceId: thread.workspaceId,
+      model: thread.model,
+      sessionId: thread.sessionId,
+      contextUsage: thread.contextUsage,
+      config: thread.config,
     }));
   }
 
@@ -344,17 +318,14 @@ export class ClaudeAdapter implements AgentAdapter {
       clearTimeout(thread.timeout);
     }
     this.rejectPendingApprovalsForThread(threadId, 'Claude session was deleted.');
-    this.cleanupPermissionBridgeConfig(thread);
-    if (this.isProcessActive(thread.process)) {
-      terminateChildProcess(thread.process);
-    }
+    this.closeThreadQuery(thread);
 
     this.streamingBuffers.delete(threadId);
     this.threads.delete(threadId);
     store.deleteThread('claude', threadId, wsId);
 
     if (this.status.activeThread === threadId) {
-      const nextActiveThread = Array.from(this.threads.values()).find((candidate) => this.isProcessActive(candidate.process));
+      const nextActiveThread = Array.from(this.threads.values()).find((candidate) => this.isQueryActive(candidate));
       if (nextActiveThread) {
         this.updateStatus('running', nextActiveThread.id, nextActiveThread);
       } else {
@@ -363,85 +334,91 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
-  // Claude 프로세스 생성
-  private spawnClaude(
-    threadId: string,
-    message: string,
-    runConfig: AgentConfig,
-    resumeSessionId?: string,
-    cwd?: string,
-  ): void {
-    const args = [
-      '--output-format', 'stream-json',
-      '--verbose',
-    ];
-    let permissionBridgeConfigPath: string | undefined;
+  private restoreStoredThreads(): void {
+    const workspaces = store.loadWorkspaces();
+    const workspaceIds = workspaces.length > 0
+      ? workspaces.map((workspace) => workspace.id)
+      : ['default'];
 
-    // 모델 설정 (default는 Claude Code 자체 기본값 사용)
-    if (runConfig.model && runConfig.model !== 'default') {
-      args.push('--model', runConfig.model);
-    }
+    for (const workspaceId of workspaceIds) {
+      const saved = store.loadThreads('claude', workspaceId);
+      for (const thread of saved) {
+        if (this.threads.has(thread.id)) {
+          continue;
+        }
 
-    const effortLevel = runConfig.effortLevel;
-    if (effortLevel) {
-      args.push('--effort', effortLevel);
-    }
-
-    const existingThread = this.threads.get(threadId);
-    const threadSessionId = existingThread?.sessionId || resumeSessionId || randomUUID();
-
-    if (resumeSessionId) {
-      args.push('--resume', resumeSessionId);
-    } else {
-      args.push('--session-id', threadSessionId);
-    }
-
-    // 권한 모드 설정
-    const perm = runConfig.permissionMode;
-    if (perm === 'bypassPermissions') {
-      args.push('--dangerously-skip-permissions');
-    } else if (perm && perm !== 'default') {
-      args.push('--permission-mode', perm);
-    }
-
-    if (perm !== 'bypassPermissions') {
-      permissionBridgeConfigPath = this.createPermissionBridgeConfig(threadId);
-      if (permissionBridgeConfigPath) {
-        args.push(
-          '--mcp-config',
-          permissionBridgeConfigPath,
-          '--permission-prompt-tool',
-          CLAUDE_PERMISSION_PROMPT_TOOL,
-        );
+        this.threads.set(thread.id, {
+          id: thread.id,
+          sessionId: thread.sessionId,
+          model: thread.model,
+          title: thread.title,
+          messages: store.loadMessages(thread.id),
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+          cwd: thread.cwd,
+          workspaceId,
+          contextUsage: thread.contextUsage,
+          config: thread.config,
+        });
       }
     }
+  }
 
-    // -p 플래그를 마지막에 추가 (프롬프트는 stdin으로 전달)
-    args.push('-p');
-
-    // 환경변수 설정
-    const env = { ...process.env, ...runConfig.env };
-    delete env.CLAUDECODE; // 중첩 실행 방지 우회
-
-    const proc = spawn('claude', args, {
-      cwd: cwd || runConfig.cwd || process.cwd(),
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: false,
-    });
-
-    // stdin으로 프롬프트 전달 후 닫기 (cmd.exe 특수문자/길이 제한 방지)
-    if (proc.stdin) {
-      proc.stdin.write(message);
-      proc.stdin.end();
+  private async refreshCapabilities(config: AgentConfig): Promise<void> {
+    let probe: ClaudeSdkQuery | undefined;
+    try {
+      probe = query({
+        prompt: '',
+        options: {
+          cwd: config.cwd || process.cwd(),
+          env: sanitizeClaudeEnv(config.env),
+          includePartialMessages: false,
+          persistSession: false,
+          settingSources: ['user', 'project', 'local'],
+        },
+      });
+      const init = await probe.initializationResult();
+      this.availableModels = init.models || [];
+    } catch (error) {
+      debugError('[claude] Failed to load SDK capabilities', error);
+      this.availableModels = [];
+    } finally {
+      probe?.close();
     }
+  }
 
+  private resolveThreadConfig(existingThread?: ThreadInfo, overrideConfig?: AgentConfig): AgentConfig {
+    const baseConfig = {
+      ...(this.config || { type: 'claude' as const }),
+      ...(existingThread?.config || {}),
+      ...(overrideConfig || {}),
+    };
+
+    return {
+      ...baseConfig,
+      type: 'claude',
+      cwd: existingThread?.cwd || overrideConfig?.cwd || baseConfig.cwd || this.config?.cwd,
+      env: baseConfig.env ? { ...baseConfig.env } : undefined,
+    };
+  }
+
+  private async runClaudeQuery(threadId: string, message: string, runConfig: AgentConfig): Promise<void> {
+    const existingThread = this.threads.get(threadId);
     const now = Date.now();
     const runId = randomUUID();
+    const threadSessionId = existingThread?.sessionId || randomUUID();
+    const resumeSessionId = existingThread?.sessionId;
+    const cwd = existingThread?.cwd || runConfig.cwd;
+
+    const userMessage: AgentMessage = {
+      id: randomUUID(),
+      role: 'user',
+      content: message,
+      timestamp: now,
+    };
 
     const threadInfo: ThreadInfo = {
       id: threadId,
-      process: proc,
       runId,
       sessionId: threadSessionId,
       model: existingThread?.model,
@@ -449,38 +426,19 @@ export class ClaudeAdapter implements AgentAdapter {
       messages: existingThread?.messages || [],
       createdAt: existingThread?.createdAt || now,
       updatedAt: now,
-      cwd: cwd || runConfig.cwd,
+      cwd,
       workspaceId: existingThread?.workspaceId || runConfig.workspaceId,
       contextUsage: existingThread?.contextUsage,
       config: runConfig,
-      permissionBridgeConfigPath,
     };
 
-    // 사용자 메시지 추가 + 저장
-    const userMessage: AgentMessage = {
-      id: randomUUID(),
-      role: 'user',
-      content: message,
-      timestamp: now,
-    };
     threadInfo.messages.push(userMessage);
     store.appendMessage(threadId, userMessage);
 
-    // 타임아웃 (5분)
-    const processTimeout = setTimeout(() => {
-      if (this.isCurrentRun(threadId, runId, proc) && this.isProcessActive(proc)) {
-        console.error(`[claude] Process timeout (5min) for thread ${threadId}`);
-        terminateChildProcess(proc);
-      }
-    }, 5 * 60 * 1000);
-
-    threadInfo.timeout = processTimeout;
+    this.streamingBuffers.set(threadId, { content: '', toolCalls: [] });
     this.threads.set(threadId, threadInfo);
     this.saveThreadMeta(threadInfo);
     this.updateStatus('running', threadId, threadInfo);
-
-    // 스트리밍 버퍼 초기화
-    this.streamingBuffers.set(threadId, { content: '', toolCalls: [] });
 
     this.emit({
       type: 'message_start',
@@ -488,28 +446,79 @@ export class ClaudeAdapter implements AgentAdapter {
       agentType: 'claude',
     });
 
-    // stdout에서 JSON 이벤트 파싱
-    let streamedText = '';
-    let pendingText = '';
-    let pendingReasoning = '';
-    const pendingToolCalls = new Map<string, ToolCall>(); // tool_use_id → ToolCall
-    let lastToolCallId: string | null = null; // 가장 최근 tool_use ID (순차 fallback용)
-    let resultReceived = false;
-    let emittedAssistantMessages = 0;
-    let resultMeta: { model?: string; costUsd?: number; usage?: { inputTokens: number; outputTokens: number } } = {};
+    let sdkQuery: ClaudeSdkQuery;
+    try {
+      sdkQuery = query({
+        prompt: message,
+        options: {
+          cwd: cwd || process.cwd(),
+          env: sanitizeClaudeEnv(runConfig.env),
+          includePartialMessages: true,
+          persistSession: true,
+          settingSources: ['user', 'project', 'local'],
+          model: normalizeClaudeModel(runConfig.model),
+          effort: normalizeClaudeEffort(readConfigString(runConfig, 'effortLevel')),
+          permissionMode: normalizeClaudePermissionMode(readConfigString(runConfig, 'permissionMode')),
+          allowDangerouslySkipPermissions: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions',
+          resume: resumeSessionId,
+          sessionId: resumeSessionId ? undefined : threadSessionId,
+          mcpServers: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions'
+            ? undefined
+            : {
+              'rca-permission': this.createPermissionMcpServer(threadId),
+            },
+          permissionPromptToolName: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions'
+            ? undefined
+            : 'rca_approve_permission',
+          stderr: (data) => {
+            this.handleQueryStderr(threadId, runId, data);
+          },
+        },
+      });
+    } catch (error) {
+      this.streamingBuffers.delete(threadId);
+      threadInfo.runId = undefined;
+      this.emit({
+        type: 'error',
+        threadId,
+        agentType: 'claude',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.updateStatus('error', threadId, threadInfo);
+      return;
+    }
+
+    threadInfo.query = sdkQuery;
+    threadInfo.timeout = setTimeout(() => {
+      if (!this.isCurrentRun(threadId, runId, sdkQuery)) {
+        return;
+      }
+
+      debugError(`[claude] Query timeout (5min) for thread ${threadId}`);
+      sdkQuery.close();
+    }, 5 * 60 * 1000);
+
+    try {
+      const init = await sdkQuery.initializationResult();
+      this.availableModels = init.models || this.availableModels;
+    } catch (error) {
+      debugError('[claude] Failed to read SDK initialization result', error);
+    }
+
+    const state = this.createStreamState();
 
     const saveThreadMessages = () => {
       store.saveMessages(threadId, threadInfo.messages);
       this.saveThreadMeta(threadInfo);
     };
 
-    const upsertAssistantMessage = (message: AgentMessage) => {
-      const existingIndex = threadInfo.messages.findIndex((entry) => entry.id === message.id);
+    const upsertAssistantMessage = (entry: AgentMessage) => {
+      const existingIndex = threadInfo.messages.findIndex((messageItem) => messageItem.id === entry.id);
       if (existingIndex >= 0) {
-        threadInfo.messages[existingIndex] = message;
+        threadInfo.messages[existingIndex] = entry;
       } else {
-        threadInfo.messages.push(message);
-        emittedAssistantMessages += 1;
+        threadInfo.messages.push(entry);
+        state.emittedAssistantMessages += 1;
       }
 
       threadInfo.updatedAt = Date.now();
@@ -518,7 +527,46 @@ export class ClaudeAdapter implements AgentAdapter {
         type: 'message_complete',
         threadId,
         agentType: 'claude',
-        message,
+        message: entry,
+      });
+    };
+
+    const syncStreamingToolCalls = () => {
+      const buffer = this.streamingBuffers.get(threadId);
+      if (!buffer) {
+        return;
+      }
+      buffer.toolCalls = Array.from(state.pendingToolCalls.values()).map((tool) => ({ ...tool }));
+    };
+
+    const upsertToolMessage = (tool: ToolCall) => {
+      const existing = threadInfo.messages.find((messageItem) => messageItem.id === tool.id);
+      const entry: AgentMessage = {
+        id: tool.id,
+        role: 'assistant',
+        content: '',
+        timestamp: existing?.timestamp || Date.now(),
+        toolCalls: [{ ...tool }],
+      };
+      syncStreamingToolCalls();
+      upsertAssistantMessage(entry);
+    };
+
+    const emitToolStart = (tool: ToolCall) => {
+      this.emit({
+        type: 'tool_start',
+        threadId,
+        agentType: 'claude',
+        tool: { ...tool },
+      });
+    };
+
+    const emitToolComplete = (tool: ToolCall) => {
+      this.emit({
+        type: 'tool_complete',
+        threadId,
+        agentType: 'claude',
+        tool: { ...tool },
       });
     };
 
@@ -527,17 +575,20 @@ export class ClaudeAdapter implements AgentAdapter {
       meta?: { model?: string; costUsd?: number; usage?: { inputTokens: number; outputTokens: number } },
     ) => {
       const normalized = text.trim();
-      const reasoning = pendingReasoning || undefined;
-      pendingText = '';
-      pendingReasoning = '';
+      const reasoning = state.pendingReasoning || undefined;
+      state.pendingText = '';
+      state.pendingReasoning = '';
+
+      const buffer = this.streamingBuffers.get(threadId);
+      if (buffer) {
+        buffer.content = '';
+      }
 
       if (!normalized && !reasoning) {
-        const buf = this.streamingBuffers.get(threadId);
-        if (buf) buf.content = '';
         return;
       }
 
-      const message: AgentMessage = {
+      upsertAssistantMessage({
         id: randomUUID(),
         role: 'assistant',
         content: text,
@@ -546,329 +597,432 @@ export class ClaudeAdapter implements AgentAdapter {
         model: meta?.model,
         costUsd: meta?.costUsd,
         usage: meta?.usage,
-      };
-      const buf = this.streamingBuffers.get(threadId);
-      if (buf) buf.content = '';
-      upsertAssistantMessage(message);
+      });
     };
 
-    const upsertToolMessage = (tool: ToolCall) => {
-      const existing = threadInfo.messages.find((entry) => entry.id === tool.id);
-      const message: AgentMessage = {
-        id: tool.id,
-        role: 'assistant',
-        content: '',
-        timestamp: existing?.timestamp || Date.now(),
-        toolCalls: [{ ...tool }],
-      };
-      upsertAssistantMessage(message);
+    const processAssistantMessage = (sdkMessage: SDKAssistantMessage) => {
+      const messageRecord = sdkMessage.message as Record<string, unknown>;
+      const contentBlocks = readArray(messageRecord, 'content');
+      if (!contentBlocks) {
+        return;
+      }
+
+      for (const blockValue of contentBlocks) {
+        if (!isRecord(blockValue)) {
+          continue;
+        }
+
+        const blockType = readString(blockValue, 'type');
+        if (blockType === 'thinking') {
+          const thinking = readString(blockValue, 'thinking');
+          if (thinking && !state.pendingReasoning) {
+            state.pendingReasoning = thinking;
+          }
+          continue;
+        }
+
+        if (blockType === 'text') {
+          const text = readString(blockValue, 'text');
+          if (text && !state.pendingText && !state.streamedText) {
+            state.pendingText = text;
+          }
+          continue;
+        }
+
+        if (blockType !== 'tool_use') {
+          continue;
+        }
+
+        if (state.pendingText || state.pendingReasoning) {
+          flushTextSegment(state.pendingText);
+        }
+
+        const toolId = readString(blockValue, 'id') || randomUUID();
+        const tool: ToolCall = {
+          id: toolId,
+          name: readString(blockValue, 'name') || 'Tool',
+          input: readRecord(blockValue, 'input') || {},
+          status: 'running',
+        };
+
+        const existed = state.pendingToolCalls.has(tool.id);
+        state.pendingToolCalls.set(tool.id, tool);
+        state.lastToolCallId = tool.id;
+        syncStreamingToolCalls();
+        if (!existed) {
+          emitToolStart(tool);
+        }
+        upsertToolMessage(tool);
+      }
     };
 
-    if (proc.stdout) {
-      const rl = createInterface({ input: proc.stdout });
+    const processUserMessage = (sdkMessage: SDKUserMessage) => {
+      const messageRecord = sdkMessage.message as Record<string, unknown>;
+      const contentBlocks = readArray(messageRecord, 'content');
+      if (!contentBlocks) {
+        return;
+      }
 
-      rl.on('line', (line) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-        if (!this.isCurrentRun(threadId, runId, proc)) return;
+      for (const blockValue of contentBlocks) {
+        if (!isRecord(blockValue) || readString(blockValue, 'type') !== 'tool_result') {
+          continue;
+        }
 
-        let event: ClaudeStreamEvent;
-        try {
-          event = JSON.parse(trimmed);
-        } catch {
-          debugLog('[claude stdout] (non-JSON)', trimmed.slice(0, 200));
+        const toolId = readString(blockValue, 'tool_use_id') || state.lastToolCallId;
+        if (!toolId) {
+          continue;
+        }
+
+        const existingTool = state.pendingToolCalls.get(toolId);
+        if (!existingTool) {
+          continue;
+        }
+
+        existingTool.output = formatClaudeContent(readUnknown(blockValue, 'content'));
+        existingTool.status = readBoolean(blockValue, 'is_error') ? 'failed' : 'completed';
+        state.pendingToolCalls.delete(existingTool.id);
+        syncStreamingToolCalls();
+        emitToolComplete(existingTool);
+        upsertToolMessage({ ...existingTool });
+      }
+    };
+
+    const processPartialMessage = (sdkMessage: SDKMessage) => {
+      if (sdkMessage.type !== 'stream_event') {
+        return;
+      }
+
+      const event = sdkMessage.event as Record<string, unknown>;
+      const eventType = readString(event, 'type');
+      if (eventType === 'content_block_start') {
+        const index = readNumber(event, 'index');
+        const contentBlock = readRecord(event, 'content_block');
+        if (!contentBlock) {
           return;
         }
 
-        debugLog('[claude event]', event.type, event.subtype || '', JSON.stringify(event).slice(0, 300));
-
-        threadInfo.updatedAt = Date.now();
-
-        switch (event.type) {
-          case 'system': {
-            if (event.subtype === 'init') {
-              if (event.session_id) {
-                threadInfo.sessionId = event.session_id;
-              }
-              if (event.model) {
-                threadInfo.model = event.model;
-                if (this.status.activeThread === threadId) {
-                  this.status.model = event.model;
-                }
-              }
-              this.saveThreadMeta(threadInfo);
-            }
-            break;
-          }
-
-          case 'assistant': {
-            // stream-json 형식: message.content 배열에서 텍스트/tool_use 추출
-            const msg = event.message as {
-              content?: Array<{
-                type: string;
-                text?: string;
-                thinking?: string;
-                id?: string;
-                name?: string;
-                input?: Record<string, unknown>;
-              }>;
-            } | undefined;
-
-            if (msg?.content) {
-              const buf = this.streamingBuffers.get(threadId);
-              for (const block of msg.content) {
-                if (block.type === 'thinking' && block.thinking) {
-                  pendingReasoning += block.thinking;
-                } else if (block.type === 'text' && block.text) {
-                  pendingText += block.text;
-                  streamedText += block.text;
-                  if (buf) buf.content += block.text;
-                  this.emit({
-                    type: 'message_delta',
-                    threadId,
-                    agentType: 'claude',
-                    content: block.text,
-                  });
-                } else if (block.type === 'tool_use' && block.name) {
-                  if (pendingText || pendingReasoning) {
-                    flushTextSegment(pendingText);
-                  }
-                  const toolCall: ToolCall = {
-                    id: block.id || randomUUID(),
-                    name: block.name,
-                    input: block.input || {},
-                    status: 'running',
-                  };
-                  pendingToolCalls.set(toolCall.id, toolCall);
-                  lastToolCallId = toolCall.id;
-                  upsertToolMessage(toolCall);
-                }
-              }
-            }
-            break;
-          }
-
-          case 'user': {
-            // tool_result (사용자 이벤트 내 tool 결과)
-            const userMsg = event.message as {
-              content?: Array<{
-                type: string;
-                content?: string;
-                tool_use_id?: string;
-                is_error?: boolean;
-              }>;
-            } | undefined;
-
-            if (userMsg?.content) {
-              const buf = this.streamingBuffers.get(threadId);
-              for (const block of userMsg.content) {
-                if (block.type === 'tool_result') {
-                  // tool_use_id로 매칭, 없으면 마지막 tool_use로 fallback
-                  const matchId = block.tool_use_id || lastToolCallId;
-                  const matched = matchId ? pendingToolCalls.get(matchId) : undefined;
-                  if (!matched) continue;
-
-                  matched.output = block.content || '';
-                  matched.status = block.is_error ? 'failed' : 'completed';
-                  pendingToolCalls.delete(matched.id);
-                  void buf;
-                  upsertToolMessage({ ...matched });
-                }
-              }
-            }
-            break;
-          }
-
-          case 'result': {
-            // 세션 ID 저장 (재연결용)
-            if (event.session_id) {
-              threadInfo.sessionId = event.session_id;
-              debugLog(`[claude] Session ID saved: ${event.session_id} for thread ${threadId}`);
-            }
-
-            if (event.model) {
-              threadInfo.model = event.model;
-              if (this.status.activeThread === threadId) {
-                this.status.model = event.model;
-              }
-            }
-
-            // 메타데이터 수집
-            if (event.cost_usd) resultMeta.costUsd = event.cost_usd;
-            if (event.model) resultMeta.model = event.model;
-
-            // 컨텍스트 사용량 계산 (스레드별 저장)
-            // prompt caching 문서 기준:
-            // - input_tokens = 마지막 cache breakpoint 이후 입력
-            // - cache_read_input_tokens = 캐시에서 읽은 입력
-            // - cache_creation_input_tokens = 이번 요청에서 새로 캐시된 입력
-            if (event.usage) {
-              const inputTokens = (event.usage.input_tokens || 0)
-                + (event.usage.cache_read_input_tokens || 0)
-                + (event.usage.cache_creation_input_tokens || 0);
-              const outputTokens = event.usage.output_tokens || 0;
-              const totalTokens = inputTokens + outputTokens;
-              resultMeta.usage = { inputTokens, outputTokens };
-
-              const contextWindow = this.extractContextWindow(event) ?? this.estimateContextWindow([
-                this.config?.model,
-                event.model,
-                this.status.model,
-              ]);
-              const percentage = Math.min(100, Math.round((totalTokens / contextWindow) * 100));
-              const usage: ContextUsage = { used: totalTokens, total: contextWindow, percentage };
-              threadInfo.contextUsage = usage;
-              if (this.status.activeThread === threadId) {
-                this.status.contextUsage = usage;
-              }
-            }
-
-            // 스트리밍 버퍼 정리
-            this.streamingBuffers.delete(threadId);
-
-            resultReceived = true;
-
-            for (const [, tc] of pendingToolCalls) {
-              upsertToolMessage({ ...tc, status: 'abandoned' });
-            }
-            pendingToolCalls.clear();
-
-            if (pendingText || pendingReasoning) {
-              flushTextSegment(pendingText, resultMeta);
-            } else {
-              const resultText = typeof event.result === 'string' ? event.result : '';
-              if (resultText) {
-                if (!streamedText) {
-                  flushTextSegment(resultText, resultMeta);
-                } else if (resultText.startsWith(streamedText)) {
-                  const suffix = resultText.slice(streamedText.length);
-                  if (suffix) {
-                    streamedText += suffix;
-                    flushTextSegment(suffix, resultMeta);
-                  }
-                } else if (resultText !== streamedText) {
-                  streamedText += resultText;
-                  flushTextSegment(resultText, resultMeta);
-                }
-              }
-            }
-
-            saveThreadMessages();
-            break;
-          }
-
-          case 'rate_limit_event':
-          default:
-            break;
+        const blockType = readString(contentBlock, 'type');
+        if (blockType !== 'tool_use') {
+          return;
         }
-      });
-    }
 
-    // stderr 에러 처리 (줄 단위 병합)
-    let stderrEmitted = false;
-    let stderrBuffer = '';
-    const flushStderrBuffer = () => {
-      const text = stderrBuffer.trim();
-      stderrBuffer = '';
-      if (!text) return;
-      if (!this.isCurrentRun(threadId, runId, proc)) return;
-      debugError('[claude stderr]', text);
-      stderrEmitted = true;
-      this.emit({
-        type: 'error',
-        threadId,
-        agentType: 'claude',
-        error: text,
-      });
+        if (state.pendingText || state.pendingReasoning) {
+          flushTextSegment(state.pendingText);
+        }
+
+        const tool: ToolCall = {
+          id: readString(contentBlock, 'id') || randomUUID(),
+          name: readString(contentBlock, 'name') || 'Tool',
+          input: readRecord(contentBlock, 'input') || {},
+          status: 'running',
+        };
+
+        if (typeof index === 'number') {
+          state.toolIndexes.set(index, tool.id);
+        }
+        const existed = state.pendingToolCalls.has(tool.id);
+        state.pendingToolCalls.set(tool.id, tool);
+        state.lastToolCallId = tool.id;
+        syncStreamingToolCalls();
+        if (!existed) {
+          emitToolStart(tool);
+        }
+        upsertToolMessage(tool);
+        return;
+      }
+
+      if (eventType !== 'content_block_delta') {
+        return;
+      }
+
+      const delta = readRecord(event, 'delta');
+      const index = readNumber(event, 'index');
+      if (!delta) {
+        return;
+      }
+
+      const deltaType = readString(delta, 'type');
+      if (deltaType === 'text_delta') {
+        const text = readString(delta, 'text');
+        if (!text) {
+          return;
+        }
+
+        state.pendingText += text;
+        state.streamedText += text;
+        const buffer = this.streamingBuffers.get(threadId);
+        if (buffer) {
+          buffer.content += text;
+        }
+        this.emit({
+          type: 'message_delta',
+          threadId,
+          agentType: 'claude',
+          content: text,
+        });
+        return;
+      }
+
+      if (deltaType === 'thinking_delta') {
+        const thinking = readString(delta, 'thinking') || readString(delta, 'text');
+        if (thinking) {
+          state.pendingReasoning += thinking;
+        }
+        return;
+      }
+
+      if (deltaType !== 'input_json_delta' || typeof index !== 'number') {
+        return;
+      }
+
+      const toolId = state.toolIndexes.get(index);
+      const partialJson = readString(delta, 'partial_json');
+      if (!toolId || !partialJson) {
+        return;
+      }
+
+      const nextInput = `${state.toolInputBuffers.get(toolId) || ''}${partialJson}`;
+      state.toolInputBuffers.set(toolId, nextInput);
+      const parsed = tryParseJsonRecord(nextInput);
+      if (!parsed) {
+        return;
+      }
+
+      const tool = state.pendingToolCalls.get(toolId);
+      if (!tool) {
+        return;
+      }
+
+      tool.input = parsed;
+      syncStreamingToolCalls();
+      upsertToolMessage({ ...tool });
     };
-    if (proc.stderr) {
-      proc.stderr.on('data', (chunk: Buffer) => {
-        stderrBuffer += chunk.toString();
-        const lines = stderrBuffer.split(/\r?\n/);
-        stderrBuffer = lines.pop() ?? '';
 
-        for (const line of lines) {
-          const text = line.trim();
-          if (!text) continue;
-          if (!this.isCurrentRun(threadId, runId, proc)) return;
-          debugError('[claude stderr]', text);
-          stderrEmitted = true;
-          this.emit({
-            type: 'error',
-            threadId,
-            agentType: 'claude',
-            error: text,
-          });
-        }
-      });
-    }
+    const processResultMessage = (sdkMessage: SDKResultMessage) => {
+      state.resultReceived = true;
 
-    // 프로세스 종료 처리
-    proc.on('close', (code) => {
-      clearTimeout(processTimeout);
-      if (!this.isCurrentRun(threadId, runId, proc)) return;
-      flushStderrBuffer();
-      this.streamingBuffers.delete(threadId);
-      this.rejectPendingApprovalsForThread(threadId, 'Claude session ended before the permission request was answered.');
-      this.cleanupPermissionBridgeConfig(threadInfo);
-      threadInfo.process = null as unknown as ChildProcess;
-      threadInfo.runId = undefined;
-      threadInfo.timeout = undefined;
-
-      // stderr에서 이미 에러를 전송했으면 close 에러 중복 방지
-      if (code !== 0 && code !== null && !stderrEmitted) {
+      if (sdkMessage.subtype !== 'success' && sdkMessage.errors.length > 0) {
         this.emit({
           type: 'error',
           threadId,
           agentType: 'claude',
-          error: `Claude process exited with code ${code}`,
+          error: sdkMessage.errors.join('\n'),
         });
       }
 
-      // result 이벤트 없이 종료된 경우 message_complete 보장
-      if (!resultReceived) {
-        for (const [, tc] of pendingToolCalls) {
-          upsertToolMessage({ ...tc, status: 'abandoned' });
-        }
-        pendingToolCalls.clear();
+      state.resultMeta.costUsd = sdkMessage.total_cost_usd;
+      if (!state.resultMeta.model) {
+        state.resultMeta.model = pickClaudeModelFromUsage(sdkMessage.modelUsage);
+      }
 
-        if (pendingText || pendingReasoning) {
-          flushTextSegment(pendingText);
-        } else if (emittedAssistantMessages === 0) {
-          flushTextSegment(code !== 0 ? `[프로세스 종료: code ${code}]` : '[응답 없음]');
-        } else {
-          saveThreadMessages();
+      const usage = toClaudeUsageSummary(sdkMessage);
+      if (usage) {
+        state.resultMeta.usage = usage;
+      }
+
+      const contextUsage = toClaudeContextUsage(sdkMessage);
+      if (contextUsage) {
+        threadInfo.contextUsage = contextUsage;
+        if (this.status.activeThread === threadId) {
+          this.status.contextUsage = contextUsage;
         }
       }
 
-      const nextActiveThread = Array.from(this.threads.values()).find((t) => this.isProcessActive(t.process));
+      if (!threadInfo.model) {
+        threadInfo.model = pickClaudeModelFromUsage(sdkMessage.modelUsage);
+      }
+
+      this.streamingBuffers.delete(threadId);
+
+      for (const [, tool] of state.pendingToolCalls) {
+        emitToolComplete({ ...tool, status: 'abandoned' });
+        upsertToolMessage({ ...tool, status: 'abandoned' });
+      }
+      state.pendingToolCalls.clear();
+
+      if (state.pendingText || state.pendingReasoning) {
+        flushTextSegment(state.pendingText, state.resultMeta);
+      } else if (sdkMessage.type === 'result' && 'result' in sdkMessage && sdkMessage.result) {
+        if (!state.streamedText) {
+          flushTextSegment(sdkMessage.result, state.resultMeta);
+        } else if (sdkMessage.result.startsWith(state.streamedText)) {
+          const suffix = sdkMessage.result.slice(state.streamedText.length);
+          if (suffix) {
+            state.streamedText += suffix;
+            flushTextSegment(suffix, state.resultMeta);
+          }
+        } else if (sdkMessage.result !== state.streamedText) {
+          state.streamedText += sdkMessage.result;
+          flushTextSegment(sdkMessage.result, state.resultMeta);
+        }
+      }
+
+      saveThreadMessages();
+    };
+
+    const finalizeWithoutResult = () => {
+      this.streamingBuffers.delete(threadId);
+      for (const [, tool] of state.pendingToolCalls) {
+        emitToolComplete({ ...tool, status: 'abandoned' });
+        upsertToolMessage({ ...tool, status: 'abandoned' });
+      }
+      state.pendingToolCalls.clear();
+
+      if (state.pendingText || state.pendingReasoning) {
+        flushTextSegment(state.pendingText, state.resultMeta);
+        return;
+      }
+
+      if (state.emittedAssistantMessages === 0) {
+        flushTextSegment('[응답 없음]');
+      } else {
+        saveThreadMessages();
+      }
+    };
+
+    const processSystemMessage = (sdkMessage: ClaudeSystemMessage) => {
+      threadInfo.updatedAt = Date.now();
+      threadInfo.sessionId = sdkMessage.session_id;
+
+      if (sdkMessage.subtype === 'init') {
+        threadInfo.model = sdkMessage.model;
+        if (this.status.activeThread === threadId) {
+          this.status.model = sdkMessage.model;
+        }
+      }
+
+      this.saveThreadMeta(threadInfo);
+    };
+
+    try {
+      for await (const sdkMessage of sdkQuery) {
+        if (!this.isCurrentRun(threadId, runId, sdkQuery)) {
+          continue;
+        }
+
+        threadInfo.updatedAt = Date.now();
+        if ('session_id' in sdkMessage && typeof sdkMessage.session_id === 'string') {
+          threadInfo.sessionId = sdkMessage.session_id;
+        }
+
+        switch (sdkMessage.type) {
+          case 'system':
+            processSystemMessage(sdkMessage);
+            break;
+          case 'stream_event':
+            processPartialMessage(sdkMessage);
+            break;
+          case 'assistant':
+            processAssistantMessage(sdkMessage);
+            break;
+          case 'user':
+            processUserMessage(sdkMessage);
+            break;
+          case 'result':
+            processResultMessage(sdkMessage);
+            break;
+          default:
+            break;
+        }
+      }
+    } catch (error) {
+      if (this.isCurrentRun(threadId, runId, sdkQuery)) {
+        const message = error instanceof Error ? error.message : String(error);
+        state.stderrEmitted = true;
+        this.emit({
+          type: 'error',
+          threadId,
+          agentType: 'claude',
+          error: message,
+        });
+      }
+    } finally {
+      if (threadInfo.timeout) {
+        clearTimeout(threadInfo.timeout);
+      }
+      if (!this.isCurrentRun(threadId, runId, sdkQuery)) {
+        return;
+      }
+
+      if (!state.resultReceived) {
+        finalizeWithoutResult();
+      }
+
+      this.rejectPendingApprovalsForThread(threadId, 'Claude session ended before the permission request was answered.');
+      threadInfo.query = undefined;
+      threadInfo.runId = undefined;
+      threadInfo.timeout = undefined;
+
+      const nextActiveThread = Array.from(this.threads.values()).find((thread) => this.isQueryActive(thread));
       if (nextActiveThread) {
         this.updateStatus('running', nextActiveThread.id, nextActiveThread);
       } else {
         this.updateStatus('idle');
       }
-    });
+    }
+  }
 
-    proc.on('error', (err) => {
-      clearTimeout(processTimeout);
-      if (!this.isCurrentRun(threadId, runId, proc)) return;
-      this.streamingBuffers.delete(threadId);
-      this.rejectPendingApprovalsForThread(threadId, 'Claude session failed before the permission request was answered.');
-      this.cleanupPermissionBridgeConfig(threadInfo);
-      threadInfo.process = null as unknown as ChildProcess;
-      threadInfo.runId = undefined;
-      threadInfo.timeout = undefined;
+  private createPermissionMcpServer(threadId: string) {
+    return createSdkMcpServer({
+      name: `rca-permission-${threadId}`,
+      tools: [
+        tool(
+          'rca_approve_permission',
+          'Routes Claude Code permission prompts to the RCA approval UI.',
+          {
+            tool_name: z.string(),
+            input: z.record(z.string(), z.unknown()).optional(),
+            tool_use_id: z.string(),
+          },
+          async ({ tool_name: toolName, input, tool_use_id: toolUseId }) => {
+            const normalizedInput = input || {};
+            const decision = await this.requestPermission(
+              threadId,
+              toolName,
+              normalizedInput,
+              toolUseId,
+            );
+            const normalizedDecision = decision.behavior === 'allow'
+              ? {
+                ...decision,
+                updatedInput: decision.updatedInput || normalizedInput,
+              }
+              : decision;
+
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify(normalizedDecision),
+              }],
+            };
+          },
+        ),
+      ],
+    });
+  }
+
+  private handleQueryStderr(threadId: string, runId: string, data: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread || !thread.query || !this.isCurrentRun(threadId, runId, thread.query)) {
+      return;
+    }
+
+    const lines = data
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      debugError('[claude stderr]', line);
       this.emit({
         type: 'error',
         threadId,
         agentType: 'claude',
-        error: `Failed to spawn claude: ${err.message}`,
+        error: line,
       });
-      this.updateStatus('error', threadId, threadInfo);
-    });
+    }
   }
 
-  // 스레드 메타데이터 디스크 저장
   private saveThreadMeta(thread: ThreadInfo): void {
     store.saveThread('claude', {
       id: thread.id,
@@ -893,96 +1047,25 @@ export class ClaudeAdapter implements AgentAdapter {
     for (const handler of this.eventHandlers) {
       try {
         handler(event);
-      } catch (err) {
-        console.error('[claude] Event handler error:', err);
+      } catch (error) {
+        console.error('[claude] Event handler error:', error);
       }
     }
   }
 
-  private isCurrentRun(threadId: string, runId: string, proc: ChildProcess): boolean {
+  private closeThreadQuery(thread: ThreadInfo): void {
+    thread.query?.close();
+    thread.query = undefined;
+    thread.runId = undefined;
+  }
+
+  private isCurrentRun(threadId: string, runId: string, sdkQuery: ClaudeSdkQuery): boolean {
     const thread = this.threads.get(threadId);
-    return thread?.runId === runId && thread.process === proc;
+    return thread?.runId === runId && thread.query === sdkQuery;
   }
 
-  private isProcessActive(proc?: ChildProcess | null): boolean {
-    return !!proc && proc.exitCode === null && proc.signalCode === null && !proc.killed;
-  }
-
-  private estimateContextWindow(modelHints: Array<string | undefined>): number {
-    const normalized = modelHints
-      .filter((value): value is string => Boolean(value))
-      .map((value) => value.toLowerCase());
-
-    if (normalized.some((value) => value.includes('1m'))) {
-      return 1_000_000;
-    }
-
-    return 200_000;
-  }
-
-  private extractContextWindow(event: ClaudeStreamEvent): number | undefined {
-    if (!event.modelUsage) return undefined;
-
-    for (const usage of Object.values(event.modelUsage)) {
-      if (typeof usage.contextWindow === 'number' && usage.contextWindow > 0) {
-        return usage.contextWindow;
-      }
-    }
-
-    return undefined;
-  }
-
-  private resolveThreadConfig(existingThread?: ThreadInfo, overrideConfig?: AgentConfig): AgentConfig {
-    const baseConfig = {
-      ...(this.config || { type: 'claude' as const }),
-      ...(existingThread?.config || {}),
-      ...(overrideConfig || {}),
-    };
-    return {
-      ...baseConfig,
-      type: 'claude',
-      cwd: existingThread?.cwd || overrideConfig?.cwd || baseConfig.cwd || this.config?.cwd,
-      env: baseConfig.env ? { ...baseConfig.env } : undefined,
-    };
-  }
-
-  private createPermissionBridgeConfig(threadId: string): string | undefined {
-    if (
-      !this.options.permissionApiBaseUrl
-      || !this.options.permissionApiToken
-      || !this.options.permissionBridgeScriptPath
-    ) {
-      return undefined;
-    }
-
-    const configPath = join(tmpdir(), `rca-claude-permission-${randomUUID()}.json`);
-    const config = {
-      mcpServers: {
-        'rca-permission': {
-          type: 'stdio',
-          command: process.execPath,
-          args: [this.options.permissionBridgeScriptPath],
-          env: {
-            RCA_CLAUDE_PERMISSION_API_URL: `${this.options.permissionApiBaseUrl}/api/internal/claude/permission-request`,
-            RCA_CLAUDE_PERMISSION_API_TOKEN: this.options.permissionApiToken,
-            RCA_CLAUDE_THREAD_ID: threadId,
-          },
-        },
-      },
-    };
-
-    writeFileSync(configPath, JSON.stringify(config), 'utf-8');
-    return configPath;
-  }
-
-  private cleanupPermissionBridgeConfig(thread: ThreadInfo): void {
-    if (!thread.permissionBridgeConfigPath) return;
-    try {
-      unlinkSync(thread.permissionBridgeConfigPath);
-    } catch {
-      // ignore cleanup failures
-    }
-    thread.permissionBridgeConfigPath = undefined;
+  private isQueryActive(thread?: ThreadInfo | null): boolean {
+    return Boolean(thread?.query && thread.runId);
   }
 
   private rejectPendingApprovalsForThread(threadId: string, reason: string): void {
@@ -992,7 +1075,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
     for (const toolCallId of pendingIds) {
       const pending = this.pendingApprovals.get(toolCallId);
-      if (!pending) continue;
+      if (!pending) {
+        continue;
+      }
+
       this.pendingApprovals.delete(toolCallId);
       pending.reject(reason);
     }
@@ -1001,6 +1087,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private updateStatus(state: AgentStatus['state'], activeThread?: string, threadInfo?: ThreadInfo): void {
     this.status.state = state;
     this.status.activeThread = activeThread;
+
     if (threadInfo) {
       this.status.model = threadInfo.model;
       this.status.contextUsage = threadInfo.contextUsage;
@@ -1015,4 +1102,237 @@ export class ClaudeAdapter implements AgentAdapter {
       status: { ...this.status },
     });
   }
+
+  private createStreamState(): ClaudeStreamState {
+    return {
+      streamedText: '',
+      pendingText: '',
+      pendingReasoning: '',
+      resultReceived: false,
+      stderrEmitted: false,
+      emittedAssistantMessages: 0,
+      lastToolCallId: null,
+      pendingToolCalls: new Map(),
+      toolIndexes: new Map(),
+      toolInputBuffers: new Map(),
+      resultMeta: {},
+    };
+  }
+}
+
+function buildClaudeOptionDefs(models: ModelInfo[]): AgentOptionDef[] {
+  if (models.length === 0) {
+    return CLAUDE_OPTIONS;
+  }
+
+  const effortOptions = buildClaudeEffortOptions(models);
+  const effortVisibleModels = models
+    .filter((model) => model.supportsEffort && (model.supportedEffortLevels?.length || 0) > 0)
+    .map((model) => model.value);
+
+  return [
+    {
+      key: 'model',
+      label: 'Model',
+      type: 'select',
+      options: [
+        { value: 'default', label: 'Default' },
+        ...models.map((model) => ({
+          value: model.value,
+          label: model.displayName,
+        })),
+      ],
+      defaultValue: 'default',
+    },
+    {
+      key: 'effortLevel',
+      label: 'Reasoning',
+      type: 'select',
+      options: effortOptions,
+      defaultValue: effortOptions.some((option) => option.value === 'medium') ? 'medium' : effortOptions[0]?.value || '',
+      visibleWhen: effortVisibleModels.length > 0
+        ? { model: ['default', ...effortVisibleModels] }
+        : undefined,
+    },
+    CLAUDE_OPTIONS.find((option) => option.key === 'permissionMode') || {
+      key: 'permissionMode',
+      label: 'Mode',
+      type: 'select',
+      options: [],
+      defaultValue: 'default',
+    },
+  ];
+}
+
+function buildClaudeEffortOptions(models: ModelInfo[]): Array<{ value: string; label: string }> {
+  const levels = Array.from(new Set(models.flatMap((model) => model.supportedEffortLevels || [])));
+  if (levels.length === 0) {
+    return [
+      { value: 'low', label: 'Low' },
+      { value: 'medium', label: 'Medium' },
+      { value: 'high', label: 'High' },
+    ];
+  }
+
+  const orderedLevels = ['low', 'medium', 'high', 'max'].filter((level) => levels.includes(level as never));
+  return orderedLevels.map((level) => ({
+    value: level,
+    label: level === 'max'
+      ? 'Max'
+      : `${level.charAt(0).toUpperCase()}${level.slice(1)}`,
+  }));
+}
+
+function normalizeClaudeModel(value: string | undefined): string | undefined {
+  if (!value || value === 'default') {
+    return undefined;
+  }
+
+  return value;
+}
+
+function normalizeClaudeEffort(value: string | undefined): 'low' | 'medium' | 'high' | 'max' | undefined {
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'max') {
+    return value;
+  }
+
+  return undefined;
+}
+
+function normalizeClaudePermissionMode(value: string | undefined): PermissionMode | undefined {
+  if (
+    value === 'default'
+    || value === 'acceptEdits'
+    || value === 'bypassPermissions'
+    || value === 'plan'
+    || value === 'dontAsk'
+  ) {
+    return value;
+  }
+
+  return undefined;
+}
+
+function sanitizeClaudeEnv(env?: Record<string, string>): Record<string, string | undefined> {
+  const nextEnv = { ...process.env, ...(env || {}) };
+  delete nextEnv.CLAUDECODE;
+  return nextEnv;
+}
+
+function pickClaudeModelFromUsage(modelUsage: Record<string, unknown> | undefined): string | undefined {
+  if (!modelUsage) {
+    return undefined;
+  }
+
+  const modelNames = Object.keys(modelUsage);
+  return modelNames[0];
+}
+
+function toClaudeUsageSummary(
+  result: SDKResultMessage,
+): { inputTokens: number; outputTokens: number } | undefined {
+  const inputTokens = (result.usage.input_tokens || 0)
+    + (result.usage.cache_read_input_tokens || 0)
+    + (result.usage.cache_creation_input_tokens || 0);
+  const outputTokens = result.usage.output_tokens || 0;
+
+  if (inputTokens === 0 && outputTokens === 0) {
+    return undefined;
+  }
+
+  return { inputTokens, outputTokens };
+}
+
+function toClaudeContextUsage(result: SDKResultMessage): ContextUsage | undefined {
+  const primaryModel = pickClaudeModelFromUsage(result.modelUsage);
+  const modelUsage = primaryModel ? readRecord(result.modelUsage as Record<string, unknown>, primaryModel) : undefined;
+  const contextWindow = readNumber(modelUsage || {}, 'contextWindow');
+  const inputTokens = (
+    (readNumber(modelUsage || {}, 'inputTokens') || result.usage.input_tokens || 0)
+    + (readNumber(modelUsage || {}, 'cacheReadInputTokens') || result.usage.cache_read_input_tokens || 0)
+    + (readNumber(modelUsage || {}, 'cacheCreationInputTokens') || result.usage.cache_creation_input_tokens || 0)
+  );
+  const outputTokens = readNumber(modelUsage || {}, 'outputTokens') || (result.usage.output_tokens || 0);
+  const totalTokens = inputTokens + outputTokens;
+
+  if (!contextWindow || contextWindow <= 0) {
+    return undefined;
+  }
+
+  return {
+    used: totalTokens,
+    total: contextWindow,
+    percentage: Math.min(100, Math.round((totalTokens / contextWindow) * 100)),
+  };
+}
+
+function tryParseJsonRecord(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatClaudeContent(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return value === undefined ? '' : JSON.stringify(value);
+  }
+
+  return value
+    .map((item) => {
+      if (typeof item === 'string') {
+        return item;
+      }
+      if (!isRecord(item)) {
+        return JSON.stringify(item);
+      }
+
+      return readString(item, 'text')
+        || readString(item, 'thinking')
+        || JSON.stringify(item);
+    })
+    .join('');
+}
+
+function readString(obj: Record<string, unknown>, key: string): string | undefined {
+  const value = obj[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readBoolean(obj: Record<string, unknown>, key: string): boolean | undefined {
+  const value = obj[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function readNumber(obj: Record<string, unknown>, key: string): number | undefined {
+  const value = obj[key];
+  return typeof value === 'number' ? value : undefined;
+}
+
+function readRecord(obj: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = obj[key];
+  return isRecord(value) ? value : undefined;
+}
+
+function readArray(obj: Record<string, unknown>, key: string): unknown[] | undefined {
+  const value = obj[key];
+  return Array.isArray(value) ? value : undefined;
+}
+
+function readUnknown(obj: Record<string, unknown>, key: string): unknown {
+  return obj[key];
+}
+
+function readConfigString(config: AgentConfig, key: string): string | undefined {
+  const value = (config as unknown as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

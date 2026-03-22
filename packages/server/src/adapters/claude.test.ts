@@ -1,33 +1,118 @@
-import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentMessage, ThreadSummary } from '@rca/shared';
-
-interface FakeStdin {
-  end: ReturnType<typeof vi.fn>;
-  write: ReturnType<typeof vi.fn>;
-}
-
-interface FakeChildProcess extends EventEmitter {
-  exitCode: number | null;
-  killed: boolean;
-  kill: ReturnType<typeof vi.fn>;
-  pid?: number;
-  signalCode: NodeJS.Signals | null;
-  stderr: PassThrough;
-  stdin: FakeStdin;
-  stdout: PassThrough;
-}
 
 interface StoreState {
   messages: Map<string, AgentMessage[]>;
   threads: Map<string, ThreadSummary[]>;
 }
 
-const childProcessMock = vi.hoisted(() => ({
-  execFile: vi.fn(),
-  spawn: vi.fn(),
-}));
+interface FakeQueryOptions {
+  initResult?: {
+    models: Array<Record<string, unknown>>;
+  };
+}
+
+class FakeQuery implements AsyncIterable<unknown>, AsyncIterator<unknown> {
+  readonly close = vi.fn(() => {
+    this.closed = true;
+    this.flushPendingDone();
+  });
+
+  readonly initializationResult = vi.fn(async () => this.initResult);
+  readonly interrupt = vi.fn(async () => {});
+  readonly supportedModels = vi.fn(async () => this.initResult.models);
+
+  private closed = false;
+  private readonly initResult: { models: Array<Record<string, unknown>> };
+  private readonly queue: unknown[] = [];
+  private readonly waiters: Array<(result: IteratorResult<unknown>) => void> = [];
+
+  constructor(options: FakeQueryOptions = {}) {
+    this.initResult = options.initResult || {
+      models: [
+        {
+          value: 'sonnet',
+          displayName: 'Sonnet',
+          description: 'Balanced model',
+          supportsEffort: true,
+          supportedEffortLevels: ['low', 'medium', 'high'],
+        },
+        {
+          value: 'opus',
+          displayName: 'Opus',
+          description: 'Deep reasoning model',
+          supportsEffort: true,
+          supportedEffortLevels: ['medium', 'high', 'max'],
+        },
+      ],
+    };
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<unknown> {
+    return this;
+  }
+
+  async next(): Promise<IteratorResult<unknown>> {
+    if (this.queue.length > 0) {
+      return {
+        done: false,
+        value: this.queue.shift(),
+      };
+    }
+
+    if (this.closed) {
+      return {
+        done: true,
+        value: undefined,
+      };
+    }
+
+    return new Promise((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  push(message: unknown): void {
+    if (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter?.({
+        done: false,
+        value: message,
+      });
+      return;
+    }
+
+    this.queue.push(message);
+  }
+
+  finish(): void {
+    this.closed = true;
+    this.flushPendingDone();
+  }
+
+  private flushPendingDone(): void {
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter?.({
+        done: true,
+        value: undefined,
+      });
+    }
+  }
+}
+
+const queryQueue = vi.hoisted<FakeQuery[]>(() => []);
+const queryMock = vi.hoisted(() => vi.fn(() => queryQueue.shift() || new FakeQuery()));
+const createSdkMcpServerMock = vi.hoisted(() => vi.fn((options: Record<string, unknown>) => ({
+  type: 'sdk',
+  ...options,
+})));
+const toolMock = vi.hoisted(() => vi.fn((name: string, description: string, inputSchema: unknown, handler: unknown) => ({
+  name,
+  description,
+  inputSchema,
+  handler,
+})));
 
 const storeState = vi.hoisted<StoreState>(() => ({
   messages: new Map(),
@@ -38,6 +123,12 @@ const storeMock = vi.hoisted(() => ({
   appendMessage: vi.fn((threadId: string, message: AgentMessage) => {
     const messages = storeState.messages.get(threadId) || [];
     storeState.messages.set(threadId, [...messages, message]);
+  }),
+  deleteThread: vi.fn((agentType: string, threadId: string, workspaceId: string) => {
+    const threads = storeState.threads.get(agentType) || [];
+    storeState.threads.set(agentType, threads.filter((thread) => thread.id !== threadId));
+    storeState.messages.delete(threadId);
+    void workspaceId;
   }),
   loadMessages: vi.fn((threadId: string) => storeState.messages.get(threadId) || []),
   loadThreads: vi.fn((agentType: string) => storeState.threads.get(agentType) || []),
@@ -58,103 +149,267 @@ const storeMock = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('node:child_process', () => childProcessMock);
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  createSdkMcpServer: createSdkMcpServerMock,
+  query: queryMock,
+  tool: toolMock,
+}));
 
 vi.mock('../store.js', () => storeMock);
 
-const createFakeChildProcess = (): FakeChildProcess => {
-  const proc = new EventEmitter() as FakeChildProcess;
-  proc.stdout = new PassThrough();
-  proc.stderr = new PassThrough();
-  proc.stdin = {
-    write: vi.fn(),
-    end: vi.fn(),
-  };
-  proc.killed = false;
-  proc.exitCode = null;
-  proc.signalCode = null;
-  proc.kill = vi.fn((signal?: NodeJS.Signals) => {
-    proc.killed = true;
-    proc.signalCode = signal ?? null;
-    proc.exitCode = proc.exitCode ?? 1;
-    return true;
-  });
-  return proc;
+const enqueueQueries = (...queries: FakeQuery[]) => {
+  queryQueue.push(...queries);
 };
 
-const flushStreamEvents = async () => {
+const flushAsync = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+const createSystemInit = (sessionId: string, model = 'claude-sonnet') => ({
+  type: 'system' as const,
+  subtype: 'init' as const,
+  session_id: sessionId,
+  model,
+});
+
+const createTextDelta = (text: string) => ({
+  type: 'stream_event' as const,
+  session_id: 'session-1',
+  event: {
+    type: 'content_block_delta',
+    index: 0,
+    delta: {
+      type: 'text_delta',
+      text,
+    },
+  },
+});
+
+const createThinkingDelta = (thinking: string) => ({
+  type: 'stream_event' as const,
+  session_id: 'session-1',
+  event: {
+    type: 'content_block_delta',
+    index: 0,
+    delta: {
+      type: 'thinking_delta',
+      thinking,
+    },
+  },
+});
+
+const createToolStart = () => ({
+  type: 'stream_event' as const,
+  session_id: 'session-1',
+  event: {
+    type: 'content_block_start',
+    index: 1,
+    content_block: {
+      type: 'tool_use',
+      id: 'tool-1',
+      name: 'Edit',
+      input: { file_path: 'a.ts' },
+    },
+  },
+});
+
+const createToolResult = () => ({
+  type: 'user' as const,
+  session_id: 'session-1',
+  message: {
+    content: [
+      {
+        type: 'tool_result',
+        tool_use_id: 'tool-1',
+        content: 'done',
+        is_error: false,
+      },
+    ],
+  },
+});
+
+const createResult = (overrides: Record<string, unknown> = {}) => ({
+  type: 'result' as const,
+  subtype: 'success' as const,
+  session_id: 'session-1',
+  is_error: false,
+  result: 'final answer',
+  total_cost_usd: 0.12,
+  duration_ms: 10,
+  duration_api_ms: 5,
+  num_turns: 1,
+  stop_reason: 'end_turn',
+  permission_denials: [],
+  usage: {
+    input_tokens: 100,
+    cache_read_input_tokens: 50,
+    cache_creation_input_tokens: 10,
+    output_tokens: 25,
+  },
+  modelUsage: {
+    'claude-sonnet': {
+      inputTokens: 100,
+      outputTokens: 25,
+      cacheReadInputTokens: 50,
+      cacheCreationInputTokens: 10,
+      webSearchRequests: 0,
+      costUSD: 0.12,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 8192,
+    },
+  },
+  ...overrides,
+});
 
 describe('ClaudeAdapter', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
     vi.useRealTimers();
+    queryQueue.length = 0;
     storeState.messages.clear();
     storeState.threads.clear();
-    childProcessMock.execFile.mockImplementation((_: string, __: string[], callback: (error: Error | null) => void) => {
-      callback(null);
-    });
+    delete process.env.CLAUDECODE;
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it('writes prompt to stdin and closes it in -p mode', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9001;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
+  it('hydrates Claude model and reasoning options from the SDK', async () => {
+    enqueueQueries(new FakeQuery({
+      initResult: {
+        models: [
+          {
+            value: 'sonnet',
+            displayName: 'Sonnet',
+            description: 'Balanced',
+            supportsEffort: true,
+            supportedEffortLevels: ['low', 'medium', 'high'],
+          },
+          {
+            value: 'opus',
+            displayName: 'Opus',
+            description: 'Deep reasoning',
+            supportsEffort: true,
+            supportedEffortLevels: ['medium', 'high', 'max'],
+          },
+        ],
+      },
+    }));
 
+    const { ClaudeAdapter } = await import('./claude.ts');
     const adapter = new ClaudeAdapter();
     await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-stdin', 'hello claude');
 
-    expect(proc.stdin.write).toHaveBeenCalledWith('hello claude');
-    expect(proc.stdin.end).toHaveBeenCalledTimes(1);
-    expect(childProcessMock.spawn).toHaveBeenCalledWith(
-      'claude',
-      expect.arrayContaining(['--session-id', expect.any(String), '-p']),
+    expect(adapter.getOptions()).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        shell: false,
+        key: 'model',
+        options: expect.arrayContaining([
+          { value: 'default', label: 'Default' },
+          { value: 'sonnet', label: 'Sonnet' },
+          { value: 'opus', label: 'Opus' },
+        ]),
       }),
-    );
+      expect.objectContaining({
+        key: 'effortLevel',
+        options: expect.arrayContaining([
+          { value: 'low', label: 'Low' },
+          { value: 'medium', label: 'Medium' },
+          { value: 'high', label: 'High' },
+          { value: 'max', label: 'Max' },
+        ]),
+      }),
+    ]));
   });
 
-  it('passes effort level through the official CLI flag', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9002;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
+  it('runs the Claude SDK query with normalized options and a sanitized environment', async () => {
+    const probe = new FakeQuery();
+    const runtime = new FakeQuery();
+    enqueueQueries(probe, runtime);
+    process.env.CLAUDECODE = 'nested';
 
+    const { ClaudeAdapter } = await import('./claude.ts');
     const adapter = new ClaudeAdapter();
     await adapter.start({
       type: 'claude',
       cwd: 'C:/workspace',
       model: 'sonnet',
-      ...({ effortLevel: 'high' } as Record<string, string>),
+      permissionMode: 'plan',
+      effortLevel: 'high',
+      env: {
+        TEST_VALUE: '1',
+      },
     });
-    adapter.sendMessage('thread-effort', 'hello');
 
-    expect(childProcessMock.spawn).toHaveBeenCalledWith(
-      'claude',
-      expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '-p']),
-      expect.objectContaining({
-        env: expect.not.objectContaining({
-          CLAUDECODE: expect.anything(),
+    adapter.sendMessage('thread-sdk-options', 'hello');
+    await flushAsync();
+
+    const runtimeCall = queryMock.mock.calls[1]?.[0];
+    expect(runtimeCall).toEqual(expect.objectContaining({
+      prompt: 'hello',
+      options: expect.objectContaining({
+        cwd: 'C:/workspace',
+        model: 'sonnet',
+        permissionMode: 'plan',
+        effort: 'high',
+        includePartialMessages: true,
+        settingSources: ['user', 'project', 'local'],
+        permissionPromptToolName: 'rca_approve_permission',
+        sessionId: expect.any(String),
+        env: expect.objectContaining({
+          TEST_VALUE: '1',
         }),
       }),
-    );
+    }));
+    expect(runtimeCall?.options?.env).not.toHaveProperty('CLAUDECODE');
   });
 
-  it('emits approval_required and resolves the pending decision when approved', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9004;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
+  it('resumes stored Claude threads with the persisted session id and config snapshot', async () => {
+    storeState.threads.set('claude', [{
+      id: 'thread-restored',
+      agentType: 'claude',
+      title: 'Restored thread',
+      messageCount: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      cwd: 'C:/saved-workspace',
+      model: 'claude-sonnet',
+      sessionId: 'saved-session',
+      config: {
+        type: 'claude',
+        cwd: 'C:/saved-workspace',
+        model: 'sonnet',
+        permissionMode: 'plan',
+        effortLevel: 'high',
+      },
+    }]);
 
+    enqueueQueries(new FakeQuery(), new FakeQuery());
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace', model: 'opus' });
+
+    adapter.sendMessage('thread-restored', 'continue');
+    await flushAsync();
+
+    const runtimeCall = queryMock.mock.calls[1]?.[0];
+    expect(runtimeCall?.options).toEqual(expect.objectContaining({
+      cwd: 'C:/saved-workspace',
+      model: 'sonnet',
+      permissionMode: 'plan',
+      effort: 'high',
+      resume: 'saved-session',
+    }));
+    expect(runtimeCall?.options?.sessionId).toBeUndefined();
+  });
+
+  it('emits approval_required through canUseTool and resolves after approve()', async () => {
+    enqueueQueries(new FakeQuery(), new FakeQuery());
+
+    const { ClaudeAdapter } = await import('./claude.ts');
     const events: AgentEvent[] = [];
     const adapter = new ClaudeAdapter();
     adapter.onEvent((event) => {
@@ -163,12 +418,14 @@ describe('ClaudeAdapter', () => {
 
     await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
     adapter.sendMessage('thread-approval', 'hello');
-    const decisionPromise = adapter.requestPermission(
-      'thread-approval',
-      'Edit',
-      { file_path: 'a.ts' },
-      'tool-1',
-    );
+    await flushAsync();
+
+    const permissionTool = queryMock.mock.calls[1]?.[0]?.options?.mcpServers?.['rca-permission']?.tools?.[0];
+    const permissionPromise = permissionTool?.handler({
+      tool_name: 'Edit',
+      input: { file_path: 'a.ts' },
+      tool_use_id: 'tool-1',
+    });
 
     expect(adapter.getStatus().state).toBe('waiting_approval');
     expect(events).toContainEqual({
@@ -185,48 +442,41 @@ describe('ClaudeAdapter', () => {
 
     adapter.approve('thread-approval', 'tool-1', true);
 
-    await expect(decisionPromise).resolves.toEqual({
-      behavior: 'allow',
-      toolUseID: 'tool-1',
-    });
-    expect(adapter.getStatus().state).toBe('running');
-  });
-
-  it('removes CLAUDECODE from the child environment', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9003;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    process.env.CLAUDECODE = 'nested';
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-env', 'hello');
-
-    expect(childProcessMock.spawn).toHaveBeenCalledWith(
-      'claude',
-      expect.any(Array),
-      expect.objectContaining({
-        env: expect.not.objectContaining({
-          CLAUDECODE: expect.anything(),
+    await expect(permissionPromise).resolves.toEqual({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          behavior: 'allow',
+          toolUseID: 'tool-1',
+          updatedInput: { file_path: 'a.ts' },
         }),
-      }),
-    );
-
-    delete process.env.CLAUDECODE;
+      }],
+    });
+    expect(adapter.getStatus().state).toBe('running');
   });
 
-  it('kills the previous process and ignores its late close event on same thread', async () => {
-    const firstProc = createFakeChildProcess();
-    const secondProc = createFakeChildProcess();
-    firstProc.pid = 9101;
-    secondProc.pid = 9102;
-    childProcessMock.spawn
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc);
-    const { ClaudeAdapter } = await import('./claude.ts');
+  it('interrupts the active Claude SDK query', async () => {
+    const probe = new FakeQuery();
+    const runtime = new FakeQuery();
+    enqueueQueries(probe, runtime);
 
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-interrupt', 'hello');
+    await flushAsync();
+
+    adapter.interrupt('thread-interrupt');
+
+    expect(runtime.interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it('parses SDK partial text, tool activity, result usage, and session metadata', async () => {
+    const probe = new FakeQuery();
+    const runtime = new FakeQuery();
+    enqueueQueries(probe, runtime);
+
+    const { ClaudeAdapter } = await import('./claude.ts');
     const events: AgentEvent[] = [];
     const adapter = new ClaudeAdapter();
     adapter.onEvent((event) => {
@@ -234,217 +484,69 @@ describe('ClaudeAdapter', () => {
     });
 
     await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-same', 'first');
-    adapter.sendMessage('thread-same', 'second');
-
-    if (process.platform === 'win32') {
-      expect(childProcessMock.execFile).toHaveBeenCalledWith(
-        'taskkill',
-        ['/PID', '9101', '/T', '/F'],
-        expect.any(Function),
-      );
-    } else {
-      expect(firstProc.kill).toHaveBeenCalledTimes(1);
-      expect(firstProc.kill).toHaveBeenCalledWith('SIGTERM');
-    }
-    expect(childProcessMock.spawn).toHaveBeenCalledTimes(2);
-
-    firstProc.emit('close', 1);
-    await flushStreamEvents();
-
-    const completeEvents = events.filter((event) => event.type === 'message_complete');
-    expect(completeEvents).toHaveLength(0);
-  });
-
-  it('keeps running state until all active threads finish and tracks the last active thread', async () => {
-    const firstProc = createFakeChildProcess();
-    const secondProc = createFakeChildProcess();
-    firstProc.pid = 9201;
-    secondProc.pid = 9202;
-    childProcessMock.spawn
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-a', 'first');
-    adapter.sendMessage('thread-b', 'second');
-
-    expect(adapter.getStatus().state).toBe('running');
-    expect(adapter.getStatus().activeThread).toBe('thread-b');
-
-    secondProc.emit('close', 0);
-    await flushStreamEvents();
-
-    expect(adapter.getStatus().state).toBe('running');
-    expect(adapter.getStatus().activeThread).toBe('thread-a');
-
-    firstProc.emit('close', 0);
-    await flushStreamEvents();
-
-    expect(adapter.getStatus().state).toBe('idle');
-  });
-
-  it('keeps status model and context usage aligned with the active thread', async () => {
-    const firstProc = createFakeChildProcess();
-    const secondProc = createFakeChildProcess();
-    firstProc.pid = 9251;
-    secondProc.pid = 9252;
-    childProcessMock.spawn
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-a', 'first');
-    adapter.sendMessage('thread-b', 'second');
-
-    firstProc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'first done',
-      model: 'claude-sonnet',
-      usage: {
-        input_tokens: 10,
-        output_tokens: 5,
-      },
-    })}\n`);
-    secondProc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'second done',
-      model: 'claude-opus',
-      usage: {
-        input_tokens: 20,
-        output_tokens: 10,
-      },
-    })}\n`);
-    await flushStreamEvents();
-
-    expect(adapter.getStatus().activeThread).toBe('thread-b');
-    expect(adapter.getStatus().model).toBe('claude-opus');
-    expect(adapter.getStatus().contextUsage).toEqual({
-      used: 30,
-      total: 200_000,
-      percentage: 0,
-    });
-
-    secondProc.emit('close', 0);
-    await flushStreamEvents();
-
-    expect(adapter.getStatus().activeThread).toBe('thread-a');
-    expect(adapter.getStatus().model).toBe('claude-sonnet');
-    expect(adapter.getStatus().contextUsage).toEqual({
-      used: 15,
-      total: 200_000,
-      percentage: 0,
-    });
-  });
-
-  it('parses assistant, tool and result events and stores session/context metadata', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9301;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const events: AgentEvent[] = [];
-    const adapter = new ClaudeAdapter();
-    adapter.onEvent((event) => {
-      events.push(event);
-    });
-
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace', model: 'sonnet[1m]' });
     adapter.sendMessage('thread-flow', 'inspect this');
+    await flushAsync();
 
-    proc.stdout.write(`${JSON.stringify({
-      type: 'system',
-      subtype: 'init',
-      session_id: 'session-init',
-      model: 'claude-sonnet',
-    })}\n`);
-    await flushStreamEvents();
-
-    expect(adapter.getStatus().model).toBe('claude-sonnet');
-    expect((await adapter.getThreads())[0]?.sessionId).toBe('session-init');
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'thinking', thinking: 'analyzing' },
-          { type: 'text', text: 'partial answer' },
-          { type: 'tool_use', id: 'tool-1', name: 'edit_file', input: { path: 'a.ts' } },
-        ],
-      },
-    })}\n`);
-    await flushStreamEvents();
-
-    expect(adapter.getStreamingState('thread-flow')).toEqual({
-      content: '',
-      toolCalls: [],
-    });
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'user',
-      message: {
-        content: [
-          { type: 'tool_result', tool_use_id: 'tool-1', content: 'done', is_error: false },
-        ],
-      },
-    })}\n`);
-    proc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'final answer',
-      session_id: 'session-1',
-      model: 'claude-sonnet',
-      cost_usd: 0.12,
-      usage: {
-        input_tokens: 100,
-        cache_read_input_tokens: 50,
-        cache_creation_input_tokens: 10,
-        output_tokens: 25,
-      },
-      modelUsage: {
-        'claude-sonnet': {
-          contextWindow: 1_000_000,
-        },
-      },
-    })}\n`);
-    await flushStreamEvents();
+    runtime.push(createSystemInit('session-1', 'claude-sonnet'));
+    runtime.push(createThinkingDelta('analyzing'));
+    runtime.push(createTextDelta('partial answer'));
+    runtime.push(createToolStart());
+    runtime.push(createToolResult());
+    runtime.push(createResult());
+    runtime.finish();
+    await flushAsync();
 
     const deltaEvent = events.find((event) => event.type === 'message_delta');
-    const completeEvents = events.filter((event) => event.type === 'message_complete');
+    const completeEvents = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    const toolEvents = events.filter((event) => event.type === 'tool_start' || event.type === 'tool_complete');
 
-    expect(deltaEvent && deltaEvent.type === 'message_delta' ? deltaEvent.content : null).toBe('partial answer');
+    expect(deltaEvent?.type === 'message_delta' ? deltaEvent.content : null).toBe('partial answer');
     expect(completeEvents).toHaveLength(4);
-    expect(completeEvents[0] && completeEvents[0].type === 'message_complete'
-      ? completeEvents[0].message.content
-      : null).toBe('partial answer');
-    expect(completeEvents[0] && completeEvents[0].type === 'message_complete'
-      ? completeEvents[0].message.reasoning
-      : null).toBe('analyzing');
-    expect(completeEvents[1] && completeEvents[1].type === 'message_complete'
-      ? completeEvents[1].message.toolCalls?.[0]?.status
-      : null).toBe('running');
-    expect(completeEvents[2] && completeEvents[2].type === 'message_complete'
-      ? completeEvents[2].message.toolCalls?.[0]
-      : null).toEqual({
+    expect(toolEvents).toEqual([
+      {
+        type: 'tool_start',
+        threadId: 'thread-flow',
+        agentType: 'claude',
+        tool: {
+          id: 'tool-1',
+          name: 'Edit',
+          input: { file_path: 'a.ts' },
+          status: 'running',
+        },
+      },
+      {
+        type: 'tool_complete',
+        threadId: 'thread-flow',
+        agentType: 'claude',
+        tool: {
+          id: 'tool-1',
+          name: 'Edit',
+          input: { file_path: 'a.ts' },
+          output: 'done',
+          status: 'completed',
+        },
+      },
+    ]);
+    expect(completeEvents[0]?.message.content).toBe('partial answer');
+    expect(completeEvents[0]?.message.reasoning).toBe('analyzing');
+    expect(completeEvents[1]?.message.toolCalls?.[0]).toEqual({
       id: 'tool-1',
-      name: 'edit_file',
-      input: { path: 'a.ts' },
+      name: 'Edit',
+      input: { file_path: 'a.ts' },
+      status: 'running',
+    });
+    expect(completeEvents[2]?.message.toolCalls?.[0]).toEqual({
+      id: 'tool-1',
+      name: 'Edit',
+      input: { file_path: 'a.ts' },
       output: 'done',
       status: 'completed',
     });
-    expect(completeEvents[3] && completeEvents[3].type === 'message_complete'
-      ? completeEvents[3].message.content
-      : null).toBe('final answer');
-    expect(adapter.getStatus().contextUsage).toEqual({
-      used: 185,
-      total: 1_000_000,
-      percentage: 0,
-    });
-
+    expect(completeEvents[3]?.message.content).toBe('final answer');
     const threads = await adapter.getThreads();
+    expect(threads[0]?.model).toBe('claude-sonnet');
     expect(threads[0]?.sessionId).toBe('session-1');
     expect(threads[0]?.contextUsage).toEqual({
       used: 185,
@@ -454,261 +556,42 @@ describe('ClaudeAdapter', () => {
     expect(adapter.getStreamingState('thread-flow')).toBeNull();
   });
 
-  it('passes --resume on subsequent messages after session id is captured', async () => {
-    const firstProc = createFakeChildProcess();
-    const secondProc = createFakeChildProcess();
-    firstProc.pid = 9401;
-    secondProc.pid = 9402;
-    childProcessMock.spawn
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc);
+  it('keeps running state aligned with the last active Claude thread', async () => {
+    const runtimeA = new FakeQuery();
+    const runtimeB = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtimeA, runtimeB);
+
     const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-resume', 'first');
-
-    firstProc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'done',
-      session_id: 'resume-session',
-    })}\n`);
-    await flushStreamEvents();
-
-    firstProc.emit('close', 0);
-    await flushStreamEvents();
-
-    adapter.sendMessage('thread-resume', 'second');
-
-    expect(childProcessMock.spawn).toHaveBeenNthCalledWith(
-      2,
-      'claude',
-      expect.arrayContaining(['--resume', 'resume-session', '-p']),
-      expect.any(Object),
-    );
-  });
-
-  it('persists thread metadata on start and after result completion', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9501;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-save-meta', 'hello');
-
-    expect(storeMock.saveThread).toHaveBeenCalledTimes(1);
-    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
-      id: 'thread-save-meta',
-      messageCount: 1,
-    }), expect.any(String));
-    expect(storeMock.appendMessage).toHaveBeenCalledWith('thread-save-meta', expect.objectContaining({
-      role: 'user',
-      content: 'hello',
-    }));
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'done',
-      session_id: 'saved-session',
-    })}\n`);
-    await flushStreamEvents();
-
-    expect(storeMock.saveThread).toHaveBeenCalledTimes(3);
-    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
-      id: 'thread-save-meta',
-      sessionId: 'saved-session',
-      messageCount: 2,
-      lastMessage: 'done',
-    }), expect.any(String));
-    expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-save-meta', expect.arrayContaining([
-      expect.objectContaining({
-        role: 'assistant',
-        content: 'done',
-      }),
-    ]));
-    expect(storeMock.appendMessage).not.toHaveBeenCalledWith('thread-save-meta', expect.objectContaining({
-      role: 'assistant',
-      content: 'done',
-    }));
-  });
-
-  it('propagates workspaceId from config to new thread and persists correctly', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9601;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
     const adapter = new ClaudeAdapter();
     await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
 
-    // workspaceId가 포함된 config으로 새 스레드 생성
-    adapter.sendMessage('thread-ws-prop', 'hello', {
-      type: 'claude',
-      cwd: 'C:/project-a',
-      workspaceId: 'ws-abc123',
-    });
+    adapter.sendMessage('thread-a', 'first');
+    adapter.sendMessage('thread-b', 'second');
+    await flushAsync();
 
-    // saveThread 호출 시 workspaceId 'ws-abc123'으로 저장
-    expect(storeMock.saveThread).toHaveBeenCalledWith(
-      'claude',
-      expect.objectContaining({
-        id: 'thread-ws-prop',
-        workspaceId: 'ws-abc123',
-      }),
-      'ws-abc123',
-    );
+    expect(adapter.getStatus().state).toBe('running');
+    expect(adapter.getStatus().activeThread).toBe('thread-b');
+
+    runtimeB.push(createResult({ session_id: 'session-b' }));
+    runtimeB.finish();
+    await flushAsync();
+
+    expect(adapter.getStatus().state).toBe('running');
+    expect(adapter.getStatus().activeThread).toBe('thread-a');
+
+    runtimeA.push(createResult({ session_id: 'session-a' }));
+    runtimeA.finish();
+    await flushAsync();
+
+    expect(adapter.getStatus().state).toBe('idle');
   });
 
-  it('restores saved threads on start and resumes with persisted session id', async () => {
-    storeState.threads.set('claude', [{
-      id: 'thread-restored',
-      agentType: 'claude',
-      title: 'Restored thread',
-      messageCount: 1,
-      createdAt: 1,
-      updatedAt: 2,
-      cwd: 'C:/saved-workspace',
-      model: 'claude-sonnet',
-      sessionId: 'saved-session',
-      contextUsage: {
-        used: 200,
-        total: 200_000,
-        percentage: 0,
-      },
-      config: {
-        type: 'claude',
-        cwd: 'C:/saved-workspace',
-        model: 'sonnet',
-        permissionMode: 'plan',
-        effortLevel: 'high',
-      },
-    }]);
-    storeState.messages.set('thread-restored', [{
-      id: 'message-1',
-      role: 'assistant',
-      content: 'saved message',
-      timestamp: 1,
-    }]);
+  it('closes the previous query and ignores late events when the same thread restarts', async () => {
+    const runtimeA = new FakeQuery();
+    const runtimeB = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtimeA, runtimeB);
 
-    const proc = createFakeChildProcess();
-    proc.pid = 9601;
-    childProcessMock.spawn.mockReturnValue(proc);
     const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-
-    const threads = await adapter.getThreads();
-    expect(threads[0]?.sessionId).toBe('saved-session');
-    expect(threads[0]?.contextUsage?.used).toBe(200);
-    expect(threads[0]?.model).toBe('claude-sonnet');
-    expect(threads[0]?.config?.model).toBe('sonnet');
-
-    adapter.sendMessage('thread-restored', 'continue');
-
-    expect(childProcessMock.spawn).toHaveBeenCalledWith(
-      'claude',
-      expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '--permission-mode', 'plan', '--resume', 'saved-session', '-p']),
-      expect.objectContaining({
-        cwd: 'C:/saved-workspace',
-      }),
-    );
-  });
-
-  it('keeps each thread configuration snapshot when the global config changes later', async () => {
-    const firstProc = createFakeChildProcess();
-    const secondProc = createFakeChildProcess();
-    firstProc.pid = 9651;
-    secondProc.pid = 9652;
-    childProcessMock.spawn
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({
-      type: 'claude',
-      cwd: 'C:/workspace',
-      model: 'sonnet',
-      permissionMode: 'plan',
-      effortLevel: 'high',
-    });
-    adapter.sendMessage('thread-config', 'first');
-
-    firstProc.emit('close', 0);
-    await flushStreamEvents();
-
-    await adapter.start({
-      type: 'claude',
-      cwd: 'C:/workspace',
-      model: 'opus',
-      permissionMode: 'acceptEdits',
-      effortLevel: 'medium',
-    });
-    adapter.sendMessage('thread-config', 'second');
-
-    expect(childProcessMock.spawn).toHaveBeenNthCalledWith(
-      2,
-      'claude',
-      expect.arrayContaining(['--model', 'sonnet', '--effort', 'high', '--permission-mode', 'plan', '-p']),
-      expect.any(Object),
-    );
-  });
-
-  it('updates an existing thread with message-scoped config overrides', async () => {
-    const firstProc = createFakeChildProcess();
-    const secondProc = createFakeChildProcess();
-    firstProc.pid = 9661;
-    secondProc.pid = 9662;
-    childProcessMock.spawn
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({
-      type: 'claude',
-      cwd: 'C:/workspace',
-      model: 'sonnet',
-      permissionMode: 'plan',
-      effortLevel: 'high',
-    });
-    adapter.sendMessage('thread-override', 'first');
-
-    firstProc.emit('close', 0);
-    await flushStreamEvents();
-
-    adapter.sendMessage('thread-override', 'second', {
-      type: 'claude',
-      model: 'opus',
-      permissionMode: 'acceptEdits',
-      effortLevel: 'medium',
-    });
-
-    expect(childProcessMock.spawn).toHaveBeenNthCalledWith(
-      2,
-      'claude',
-      expect.arrayContaining(['--model', 'opus', '--effort', 'medium', '--permission-mode', 'acceptEdits', '-p']),
-      expect.any(Object),
-    );
-
-    const threads = await adapter.getThreads();
-    expect(threads[0]?.config).toMatchObject({
-      type: 'claude',
-      model: 'opus',
-      permissionMode: 'acceptEdits',
-      effortLevel: 'medium',
-    });
-  });
-
-  it('avoids duplicate error events when stderr is followed by a non-zero close', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9701;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
     const events: AgentEvent[] = [];
     const adapter = new ClaudeAdapter();
     adapter.onEvent((event) => {
@@ -716,24 +599,88 @@ describe('ClaudeAdapter', () => {
     });
 
     await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-error', 'hello');
+    adapter.sendMessage('thread-restart', 'first');
+    await flushAsync();
+    adapter.sendMessage('thread-restart', 'second');
+    await flushAsync();
 
-    proc.stderr.write('permission denied');
-    await flushStreamEvents();
-    proc.emit('close', 2);
-    await flushStreamEvents();
+    expect(runtimeA.close).toHaveBeenCalledTimes(1);
 
-    const errors = events.filter((event) => event.type === 'error');
-    expect(errors).toHaveLength(1);
-    expect(errors[0] && errors[0].type === 'error' ? errors[0].error : null).toBe('permission denied');
+    runtimeA.push(createResult({ result: 'late result' }));
+    runtimeA.finish();
+    runtimeB.push(createResult({ result: 'current result' }));
+    runtimeB.finish();
+    await flushAsync();
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    expect(completed.at(-1)?.message.content).toBe('current result');
+    expect(completed.some((event) => event.message.content === 'late result')).toBe(false);
   });
 
-  it('merges split stderr chunks before emitting an error event', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9702;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
+  it('reuses the generated session id as resume target after an unfinished run', async () => {
+    const runtimeA = new FakeQuery();
+    const runtimeB = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtimeA, runtimeB);
 
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+
+    adapter.sendMessage('thread-generated-session', 'first');
+    await flushAsync();
+
+    const firstSessionId = queryMock.mock.calls[1]?.[0]?.options?.sessionId;
+    expect(firstSessionId).toEqual(expect.any(String));
+
+    runtimeA.finish();
+    await flushAsync();
+
+    adapter.sendMessage('thread-generated-session', 'retry');
+    await flushAsync();
+
+    expect(queryMock.mock.calls[2]?.[0]?.options).toEqual(expect.objectContaining({
+      resume: firstSessionId,
+    }));
+  });
+
+  it('denies pending permission requests if the query ends first', async () => {
+    const runtime = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtime);
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const adapter = new ClaudeAdapter();
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-permission-close', 'hello');
+    await flushAsync();
+
+    const permissionTool = queryMock.mock.calls[1]?.[0]?.options?.mcpServers?.['rca-permission']?.tools?.[0];
+    const decisionPromise = permissionTool?.handler({
+      tool_name: 'Bash',
+      input: { command: 'rm -rf tmp' },
+      tool_use_id: 'tool-close',
+    });
+
+    runtime.finish();
+    await flushAsync();
+
+    await expect(decisionPromise).resolves.toEqual({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          behavior: 'deny',
+          message: 'Claude session ended before the permission request was answered.',
+          toolUseID: 'tool-close',
+        }),
+      }],
+    });
+  });
+
+  it('emits an error and leaves the adapter recoverable when query creation fails synchronously', async () => {
+    enqueueQueries(new FakeQuery());
+
+    const { ClaudeAdapter } = await import('./claude.ts');
     const errors: string[] = [];
     const adapter = new ClaudeAdapter();
     adapter.onEvent((event) => {
@@ -743,409 +690,14 @@ describe('ClaudeAdapter', () => {
     });
 
     await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-stderr-split', 'hello');
-
-    proc.stderr.write('permission ');
-    proc.stderr.write('denied\n');
-    await flushStreamEvents();
-
-    expect(errors).toEqual(['permission denied']);
-  });
-
-  it('emits fallback message and clears streaming state on spawn error', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9801;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const events: AgentEvent[] = [];
-    const adapter = new ClaudeAdapter();
-    adapter.onEvent((event) => {
-      events.push(event);
+    queryMock.mockImplementationOnce(() => {
+      throw new Error('query failed');
     });
 
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-spawn-error', 'hello');
+    adapter.sendMessage('thread-query-error', 'hello');
+    await flushAsync();
 
-    expect(adapter.getStreamingState('thread-spawn-error')).toEqual({
-      content: '',
-      toolCalls: [],
-    });
-
-    proc.emit('error', new Error('spawn failed'));
-    await flushStreamEvents();
-
-    expect(adapter.getStreamingState('thread-spawn-error')).toBeNull();
-    expect(events.some((event) => event.type === 'error' && event.error.includes('spawn failed'))).toBe(true);
-  });
-
-  it('terminates long-running processes through the timeout path', async () => {
-    vi.useFakeTimers();
-
-    const proc = createFakeChildProcess();
-    proc.pid = 9851;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-timeout', 'hello');
-
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
-
-    if (process.platform === 'win32') {
-      expect(childProcessMock.execFile).toHaveBeenCalledWith(
-        'taskkill',
-        ['/PID', '9851', '/T', '/F'],
-        expect.any(Function),
-      );
-    } else {
-      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
-    }
-  });
-
-  it('creates a fallback assistant message when the process closes before result', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9901;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const events: AgentEvent[] = [];
-    const adapter = new ClaudeAdapter();
-    adapter.onEvent((event) => {
-      events.push(event);
-    });
-
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-close', 'hello');
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [{ type: 'text', text: 'partial' }],
-      },
-    })}\n`);
-    await flushStreamEvents();
-    proc.emit('close', 0);
-    await flushStreamEvents();
-
-    const completed = events.find((event) => event.type === 'message_complete');
-    expect(completed && completed.type === 'message_complete' ? completed.message.content : null).toBe('partial');
-    expect(storeMock.saveThread).toHaveBeenCalledTimes(2);
-    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
-      id: 'thread-close',
-      messageCount: 2,
-      lastMessage: 'partial',
-    }), expect.any(String));
-    expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-close', expect.arrayContaining([
-      expect.objectContaining({
-        role: 'assistant',
-        content: 'partial',
-      }),
-    ]));
-  });
-
-  it('persists the last assistant message on non-zero process close', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9902;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-close-error', 'hello');
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [{ type: 'text', text: 'partial error output' }],
-      },
-    })}\n`);
-    await flushStreamEvents();
-    proc.emit('close', 2);
-    await flushStreamEvents();
-
-    expect(storeMock.saveMessages).toHaveBeenCalledWith('thread-close-error', expect.arrayContaining([
-      expect.objectContaining({
-        role: 'assistant',
-        content: 'partial error output',
-      }),
-    ]));
-    expect(storeMock.saveThread).toHaveBeenLastCalledWith('claude', expect.objectContaining({
-      id: 'thread-close-error',
-      lastMessage: 'partial error output',
-      messageCount: 2,
-    }), expect.any(String));
-  });
-
-  it('completes pending tool calls from result even when tool_result is missing', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9911;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const events: AgentEvent[] = [];
-    const adapter = new ClaudeAdapter();
-    adapter.onEvent((event) => {
-      events.push(event);
-    });
-
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-pending-tool', 'hello');
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: 'a.ts' } },
-          { type: 'tool_use', id: 'tool-2', name: 'read_file', input: { path: 'b.ts' } },
-        ],
-      },
-    })}\n`);
-    proc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'done',
-    })}\n`);
-    await flushStreamEvents();
-
-    const completed = events.filter((event) => event.type === 'message_complete');
-    expect(completed).toHaveLength(5);
-    expect(completed[2] && completed[2].type === 'message_complete'
-      ? completed[2].message.toolCalls?.[0]?.status
-      : null).toBe('abandoned');
-    expect(completed[3] && completed[3].type === 'message_complete'
-      ? completed[3].message.toolCalls?.[0]?.status
-      : null).toBe('abandoned');
-    expect(completed[4] && completed[4].type === 'message_complete'
-      ? completed[4].message.content
-      : null).toBe('done');
-  });
-
-  it('keeps pending tool calls stable when another assistant event arrives before tool_result', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9912;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const events: AgentEvent[] = [];
-    const adapter = new ClaudeAdapter();
-    adapter.onEvent((event) => {
-      events.push(event);
-    });
-
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-tool-gap', 'hello');
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'tool_use', id: 'tool-gap', name: 'read_file', input: { path: 'a.ts' } },
-        ],
-      },
-    })}\n`);
-    proc.stdout.write(`${JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'text', text: 'continuing after tool' },
-        ],
-      },
-    })}\n`);
-    proc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'continuing after tool',
-    })}\n`);
-    await flushStreamEvents();
-
-    const completed = events.filter((event) => event.type === 'message_complete');
-    expect(completed).toHaveLength(3);
-    expect(completed[1] && completed[1].type === 'message_complete'
-      ? completed[1].message.toolCalls?.[0]?.status
-      : null).toBe('abandoned');
-    expect(completed[2] && completed[2].type === 'message_complete'
-      ? completed[2].message.content
-      : null).toBe('continuing after tool');
-  });
-
-  it('falls back to the latest tool call id when tool_result omits tool_use_id', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9921;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const events: AgentEvent[] = [];
-    const adapter = new ClaudeAdapter();
-    adapter.onEvent((event) => {
-      events.push(event);
-    });
-
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-tool-fallback', 'hello');
-
-    proc.stdout.write(`${JSON.stringify({
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'tool_use', id: 'tool-1', name: 'read_file', input: { path: 'a.ts' } },
-        ],
-      },
-    })}\n`);
-    proc.stdout.write(`${JSON.stringify({
-      type: 'user',
-      message: {
-        content: [
-          { type: 'tool_result', content: 'done', is_error: false },
-        ],
-      },
-    })}\n`);
-    proc.stdout.write(`${JSON.stringify({
-      type: 'result',
-      result: 'done',
-    })}\n`);
-    await flushStreamEvents();
-
-    const completed = events.filter((event) => event.type === 'message_complete');
-    expect(completed).toHaveLength(3);
-    expect(completed[1] && completed[1].type === 'message_complete'
-      ? completed[1].message.toolCalls?.[0]
-      : null).toEqual({
-      id: 'tool-1',
-      name: 'read_file',
-      input: { path: 'a.ts' },
-      output: 'done',
-      status: 'completed',
-    });
-    expect(completed[2] && completed[2].type === 'message_complete'
-      ? completed[2].message.content
-      : null).toBe('done');
-  });
-
-  it('logs handler errors without breaking remaining event delivery', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9931;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    const received: AgentEvent[] = [];
-
-    adapter.onEvent(() => {
-      throw new Error('handler failed');
-    });
-    adapter.onEvent((event) => {
-      received.push(event);
-    });
-
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-handler', 'hello');
-    proc.emit('error', new Error('spawn failed'));
-    await flushStreamEvents();
-
-    expect(received.some((event) => event.type === 'error')).toBe(true);
-    expect(consoleErrorSpy).toHaveBeenCalledWith('[claude] Event handler error:', expect.any(Error));
-  });
-
-  it('passes prompts through stdin instead of shell arguments on shell-sensitive input', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9941;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const dangerousPrompt = 'echo hacked && del C:\\temp\\*';
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-shell-safe', dangerousPrompt);
-
-    const spawnArgs = childProcessMock.spawn.mock.calls[0]?.[1] as string[];
-    expect(spawnArgs).not.toContain(dangerousPrompt);
-    expect(proc.stdin.write).toHaveBeenCalledWith(dangerousPrompt);
-  });
-
-  it('keeps a generated session id so a failed first run can resume on retry', async () => {
-    const firstProc = createFakeChildProcess();
-    const secondProc = createFakeChildProcess();
-    firstProc.pid = 9942;
-    secondProc.pid = 9943;
-    childProcessMock.spawn
-      .mockReturnValueOnce(firstProc)
-      .mockReturnValueOnce(secondProc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-generated-session', 'first');
-
-    const firstArgs = childProcessMock.spawn.mock.calls[0]?.[1] as string[];
-    const sessionIndex = firstArgs.indexOf('--session-id');
-    expect(sessionIndex).toBeGreaterThanOrEqual(0);
-    const generatedSessionId = firstArgs[sessionIndex + 1];
-    expect(generatedSessionId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-    );
-
-    firstProc.emit('close', 1);
-    await flushStreamEvents();
-
-    adapter.sendMessage('thread-generated-session', 'retry');
-
-    expect(childProcessMock.spawn).toHaveBeenNthCalledWith(
-      2,
-      'claude',
-      expect.arrayContaining(['--resume', generatedSessionId, '-p']),
-      expect.any(Object),
-    );
-  });
-
-  it('wires the permission bridge flags when bridge options are configured', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9951;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter({
-      permissionApiBaseUrl: 'http://127.0.0.1:9470',
-      permissionApiToken: 'secret-token',
-      permissionBridgeScriptPath: 'C:/workspace/packages/server/bin/claude-permission-bridge.mjs',
-    });
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace', permissionMode: 'default' });
-    adapter.sendMessage('thread-bridge', 'hello');
-
-    const spawnArgs = childProcessMock.spawn.mock.calls[0]?.[1] as string[];
-    expect(spawnArgs).toEqual(expect.arrayContaining([
-      '--mcp-config',
-      expect.stringMatching(/rca-claude-permission-.*\.json$/),
-      '--permission-prompt-tool',
-      'mcp__rca-permission__rca_approve_permission',
-      '-p',
-    ]));
-  });
-
-  it('denies pending permission requests if the Claude process exits first', async () => {
-    const proc = createFakeChildProcess();
-    proc.pid = 9952;
-    childProcessMock.spawn.mockReturnValue(proc);
-    const { ClaudeAdapter } = await import('./claude.ts');
-
-    const adapter = new ClaudeAdapter();
-    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
-    adapter.sendMessage('thread-approval-close', 'hello');
-
-    const decisionPromise = adapter.requestPermission(
-      'thread-approval-close',
-      'Bash',
-      { command: 'rm -rf tmp' },
-      'tool-close',
-    );
-
-    proc.emit('close', 1);
-    await flushStreamEvents();
-
-    await expect(decisionPromise).resolves.toEqual({
-      behavior: 'deny',
-      message: 'Claude session ended before the permission request was answered.',
-      toolUseID: 'tool-close',
-    });
+    expect(errors).toContain('query failed');
+    expect(adapter.getStatus().state).toBe('error');
   });
 });
