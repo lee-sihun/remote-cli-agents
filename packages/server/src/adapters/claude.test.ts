@@ -356,7 +356,7 @@ describe('ClaudeAdapter', () => {
         effort: 'high',
         includePartialMessages: true,
         settingSources: ['user', 'project', 'local'],
-        permissionPromptToolName: 'rca_approve_permission',
+        permissionPromptToolName: 'mcp__rca-permission__rca_approve_permission',
         sessionId: expect.any(String),
         env: expect.objectContaining({
           TEST_VALUE: '1',

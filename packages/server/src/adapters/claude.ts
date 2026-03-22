@@ -86,6 +86,10 @@ interface ClaudeStreamState {
   };
 }
 
+const CLAUDE_PERMISSION_MCP_SERVER_KEY = 'rca-permission';
+const CLAUDE_PERMISSION_TOOL_NAME = 'rca_approve_permission';
+const CLAUDE_PERMISSION_PROMPT_TOOL_NAME = `mcp__${CLAUDE_PERMISSION_MCP_SERVER_KEY}__${CLAUDE_PERMISSION_TOOL_NAME}`;
+
 export class ClaudeAdapter implements AgentAdapter {
   readonly name = 'Claude Code';
   readonly type = 'claude' as const;
@@ -465,11 +469,11 @@ export class ClaudeAdapter implements AgentAdapter {
           mcpServers: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions'
             ? undefined
             : {
-              'rca-permission': this.createPermissionMcpServer(threadId),
+              [CLAUDE_PERMISSION_MCP_SERVER_KEY]: this.createPermissionMcpServer(threadId),
             },
           permissionPromptToolName: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions'
             ? undefined
-            : 'rca_approve_permission',
+            : CLAUDE_PERMISSION_PROMPT_TOOL_NAME,
           stderr: (data) => {
             this.handleQueryStderr(threadId, runId, data);
           },
@@ -967,10 +971,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private createPermissionMcpServer(threadId: string) {
     return createSdkMcpServer({
-      name: `rca-permission-${threadId}`,
+      name: `${CLAUDE_PERMISSION_MCP_SERVER_KEY}-${threadId}`,
       tools: [
         tool(
-          'rca_approve_permission',
+          CLAUDE_PERMISSION_TOOL_NAME,
           'Routes Claude Code permission prompts to the RCA approval UI.',
           {
             tool_name: z.string(),
