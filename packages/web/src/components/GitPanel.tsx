@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   GitBranch,
   GitCommit,
@@ -32,7 +32,11 @@ interface GitStatus {
     status: string;
     staged: boolean;
   }>;
+  _error?: string;
 }
+
+// 결과 도착 후 status 자동 갱신 대상 액션
+const REFRESH_AFTER = new Set(['commit', 'stash', 'stash_pop', 'pull', 'push']);
 
 function fileStatusIcon(status: string) {
   switch (status) {
@@ -55,7 +59,10 @@ export default function GitPanel({
 }: GitPanelProps) {
   const [commitMessage, setCommitMessage] = useState('');
   const [loading, setLoading] = useState<string | null>(null);
+  // 어떤 액션의 응답을 기다리는지 + 이전 결과값 저장 (race condition 방지)
+  const pendingRefreshRef = useRef<{ action: string; prev: unknown } | null>(null);
 
+  // useAgent.ts에서 data만 언래핑 후 저장; 실패 시 { _error } 저장
   const gitStatus = gitResults.get('status') as GitStatus | undefined;
 
   const requestStatus = useCallback(() => {
@@ -68,17 +75,27 @@ export default function GitPanel({
     }
   }, [open, requestStatus]);
 
-  // Clear loading when result arrives
+  // 결과 도착 시 로딩 해제 + 쓰기 액션 응답 확인 후 status 자동 갱신
   useEffect(() => {
     setLoading(null);
-  }, [gitResults]);
+    const pending = pendingRefreshRef.current;
+    if (!pending) return;
+    const next = gitResults.get(pending.action);
+    // 이전 값과 달라졌을 때만 → 해당 액션 결과가 실제로 도착한 것
+    if (next === undefined || Object.is(next, pending.prev)) return;
+    pendingRefreshRef.current = null;
+    requestStatus();
+  }, [gitResults, requestStatus]);
 
   const handleAction = useCallback(
     (action: string, params?: Record<string, unknown>) => {
       setLoading(action);
+      if (REFRESH_AFTER.has(action)) {
+        pendingRefreshRef.current = { action, prev: gitResults.get(action) };
+      }
       onSend({ type: 'git', action, params });
     },
-    [onSend],
+    [gitResults, onSend],
   );
 
   const handleCommit = useCallback(() => {
@@ -132,8 +149,15 @@ export default function GitPanel({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* 에러 표시 */}
+          {gitStatus?._error && (
+            <div className="text-xs text-(--error) bg-(--error)/10 rounded-lg px-3 py-2">
+              {gitStatus._error}
+            </div>
+          )}
+
           {/* Branch info */}
-          {gitStatus && (
+          {gitStatus && !gitStatus._error && (
             <div className="flex items-center gap-4 text-xs text-(--text-muted)">
               {gitStatus.ahead !== undefined && gitStatus.ahead > 0 && (
                 <span className="text-(--success)">
@@ -174,7 +198,7 @@ export default function GitPanel({
               </div>
             ) : (
               <p className="text-xs text-(--text-muted)">
-                No changes detected
+                {gitStatus && !gitStatus._error ? 'No changes detected' : ''}
               </p>
             )}
           </div>

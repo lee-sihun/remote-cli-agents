@@ -192,7 +192,7 @@ export default function App() {
   const activeThreadSummary = store.activeAgent && store.activeThread
     ? store.threads.get(store.activeAgent)?.find((t) => t.id === store.activeThread)
     : undefined;
-  const { model: activeModel, contextUsage } = resolveActiveThreadMeta(
+  const { contextUsage } = resolveActiveThreadMeta(
     store.activeThread,
     agentStatus,
     activeThreadSummary,
@@ -555,11 +555,6 @@ export default function App() {
                     ?.name || store.activeAgent}
                 </span>
               )}
-              {activeModel && store.activeAgent !== 'claude' && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-(--bg-tertiary) text-(--text-muted)">
-                  {activeModel}
-                </span>
-              )}
             </div>
           </div>
 
@@ -645,8 +640,8 @@ export default function App() {
               onInterrupt={handleInterrupt}
               isRunning={isRunning}
               disabled={!store.activeAgent || ws.status !== 'connected'}
-              inputOptions={currentAgentOptions.filter((o) => o.key === 'model' || o.key === 'effortLevel')}
-              footerOptions={currentAgentOptions.filter((o) => o.key === 'permissionMode' || o.key === 'approvalMode' || o.key === 'sandboxMode' || o.key === 'speedMode')}
+              inputOptions={currentAgentOptions.filter((o) => o.key === 'model' || o.key === 'effortLevel' || o.key === 'speedMode')}
+              footerOptions={currentAgentOptions.filter((o) => o.key === 'permissionMode' || o.key === 'approvalMode' || o.key === 'sandboxMode')}
               settingValues={currentAgentSettings}
               onSettingChange={handleAgentSettingChange}
               contextUsage={contextUsage}

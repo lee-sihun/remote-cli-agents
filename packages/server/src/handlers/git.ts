@@ -24,6 +24,7 @@ const ALLOWED_ACTIONS = new Set([
   'branches',
   'checkout',
   'stash',
+  'stash_pop',
 ]);
 
 // Git 명령 핸들러
@@ -56,6 +57,8 @@ export async function handleGit(
         return await gitCheckout(cwd, params);
       case 'stash':
         return await gitStash(cwd, params);
+      case 'stash_pop':
+        return await gitStash(cwd, { action: 'pop' });
       default:
         return { success: false, error: `Unhandled action: ${action}` };
     }
@@ -83,6 +86,21 @@ function execGit(args: string[], options: GitExecOptions): Promise<string> {
   });
 }
 
+// porcelain XY 상태코드 → human-readable 변환
+function parseStatusCode(code: string): string {
+  switch (code) {
+    case 'A': return 'added';
+    case 'D': return 'deleted';
+    case 'R': return 'renamed';
+    case 'M': return 'modified';
+    case '?': return 'untracked';
+    default:   return 'modified';
+  }
+}
+
+// 병합 충돌 XY 조합
+const CONFLICT_XY = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+
 async function gitStatus(cwd: string): Promise<GitResult> {
   const [statusOutput, branchOutput] = await Promise.all([
     execGit(['status', '--porcelain', '-u'], { cwd }),
@@ -94,9 +112,21 @@ async function gitStatus(cwd: string): Promise<GitResult> {
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const status = line.slice(0, 2).trim();
-      const file = line.slice(3);
-      return { status, file };
+      const x = line[0] ?? ' '; // index (staged)
+      const y = line[1] ?? ' '; // worktree (unstaged)
+      const rawPath = line.slice(3);
+      // Rename/Copy: "old -> new" 형태에서 새 경로만 추출
+      const path = (x === 'R' || x === 'C')
+        ? (rawPath.split(' -> ').at(-1) ?? rawPath)
+        : rawPath;
+
+      if (CONFLICT_XY.has(`${x}${y}`)) {
+        return { path, status: 'conflicted', staged: false };
+      }
+
+      const staged = x !== ' ' && x !== '?';
+      const code = staged ? x : y;
+      return { path, status: parseStatusCode(code), staged };
     });
 
   return {

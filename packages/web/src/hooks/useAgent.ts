@@ -632,7 +632,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
       case 'git_result': {
         const results = new Map(state.gitResults);
-        results.set(msg.action, msg.result);
+        // { success, data, error } 래퍼에서 data만 꺼내 저장; 실패 시 error 객체 저장
+        const raw = msg.result as { success: boolean; data?: unknown; error?: string } | undefined;
+        results.set(msg.action, raw?.success ? raw.data : { _error: raw?.error ?? 'Unknown error' });
         set({ gitResults: results });
         break;
       }
