@@ -743,7 +743,9 @@ describe('CodexAdapter', () => {
     });
 
     const { CodexAdapter } = await import('./codex.ts');
+    const events: AgentEvent[] = [];
     const adapter = new CodexAdapter();
+    adapter.onEvent((event) => events.push(event));
     await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
     adapter.sendMessage('thread-compact', 'continue', { type: 'codex', cwd: 'C:/workspace' });
     await flushStreamEvents();
@@ -771,6 +773,13 @@ describe('CodexAdapter', () => {
       },
     })}\n`);
     proc.stdout.write(`${JSON.stringify({
+      method: 'item/started',
+      params: {
+        threadId: 'thread-compact',
+        item: { id: 'compact-1', type: 'contextCompaction' },
+      },
+    })}\n`);
+    proc.stdout.write(`${JSON.stringify({
       method: 'item/completed',
       params: {
         threadId: 'thread-compact',
@@ -793,6 +802,44 @@ describe('CodexAdapter', () => {
 
     const threads = await adapter.getThreads();
     expect(threads[0]?.contextUsage).toBeUndefined();
+    const compactionMessages = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete' && event.threadId === 'thread-compact' && event.message.systemMeta?.kind === 'context_compaction'
+    ));
+    expect(compactionMessages).toHaveLength(2);
+    expect(compactionMessages[0]?.message.id).toBe(compactionMessages[1]?.message.id);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'message_complete',
+        threadId: 'thread-compact',
+        message: expect.objectContaining({
+          role: 'system',
+          content: 'Context compaction started.',
+          systemMeta: {
+            kind: 'context_compaction',
+            status: 'running',
+          },
+        }),
+      }),
+      expect.objectContaining({
+        type: 'message_complete',
+        threadId: 'thread-compact',
+        message: expect.objectContaining({
+          role: 'system',
+          content: 'Context compacted. Continuing with a refreshed window.',
+          systemMeta: {
+            kind: 'context_compaction',
+            status: 'completed',
+          },
+        }),
+      }),
+      expect.objectContaining({
+        type: 'status_change',
+        status: expect.objectContaining({
+          activeThread: 'thread-compact',
+          contextUsage: null,
+        }),
+      }),
+    ]));
   });
 
   it('keeps refreshed Codex context usage after context compaction when a new usage update arrives', async () => {

@@ -83,4 +83,28 @@ describe('resolveActiveThreadMeta', () => {
       },
     });
   });
+
+  it('clears the visible context usage when the active thread explicitly resets it', () => {
+    expect(resolveActiveThreadMeta('thread-a', {
+      agent: 'codex',
+      state: 'running',
+      activeThread: 'thread-a',
+      contextUsage: null,
+    }, {
+      id: 'thread-a',
+      agentType: 'codex',
+      title: 'Thread A',
+      messageCount: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      contextUsage: {
+        used: 1000,
+        total: 1000,
+        percentage: 100,
+      },
+    })).toEqual({
+      model: undefined,
+      contextUsage: undefined,
+    });
+  });
 });

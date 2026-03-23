@@ -193,6 +193,23 @@ const createSystemInit = (sessionId: string, model = 'claude-sonnet') => ({
   model,
 });
 
+const createSystemStatus = (sessionId: string, status: string | null) => ({
+  type: 'system' as const,
+  subtype: 'status' as const,
+  session_id: sessionId,
+  status,
+});
+
+const createCompactBoundary = (sessionId: string, trigger: 'manual' | 'auto' = 'manual') => ({
+  type: 'system' as const,
+  subtype: 'compact_boundary' as const,
+  session_id: sessionId,
+  compact_metadata: {
+    trigger,
+    pre_tokens: 19_612,
+  },
+});
+
 const createTextDelta = (text: string) => ({
   type: 'stream_event' as const,
   session_id: 'session-1',
@@ -809,6 +826,19 @@ describe('ClaudeAdapter', () => {
     const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
       event.type === 'message_complete'
     ));
+    expect(completed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        threadId: 'thread-compact',
+        message: expect.objectContaining({
+          role: 'system',
+          content: 'Context compacted. Continuing with a refreshed window.',
+          systemMeta: {
+            kind: 'context_compaction',
+            status: 'completed',
+          },
+        }),
+      }),
+    ]));
     expect(completed.at(-1)?.message.usage).toEqual({
       inputTokens: 203_000,
       outputTokens: 4_500,
@@ -820,6 +850,71 @@ describe('ClaudeAdapter', () => {
       total: 200_000,
       percentage: 12,
     });
+  });
+
+  it('emits Claude manual compaction lifecycle messages from system status events', async () => {
+    const runtime = new FakeQuery();
+    enqueueQueries(new FakeQuery(), runtime);
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const events: AgentEvent[] = [];
+    const adapter = new ClaudeAdapter();
+    adapter.onEvent((event) => {
+      events.push(event);
+    });
+
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+    adapter.sendMessage('thread-manual-compact', '/compact');
+    await flushAsync();
+
+    runtime.push(createSystemStatus('session-manual-compact', 'compacting'));
+    runtime.push(createSystemStatus('session-manual-compact', null));
+    runtime.push(createSystemInit('session-manual-compact', 'claude-sonnet'));
+    runtime.push(createCompactBoundary('session-manual-compact'));
+    runtime.push(createResult({
+      result: '',
+      usage: {
+        input_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: 0,
+        iterations: [],
+      },
+    }));
+    runtime.finish();
+    await flushAsync();
+
+    const completed = events.filter((event): event is Extract<AgentEvent, { type: 'message_complete' }> => (
+      event.type === 'message_complete'
+    ));
+    const compactionMessages = completed.filter((event) => event.message.systemMeta?.kind === 'context_compaction');
+
+    expect(compactionMessages).toHaveLength(2);
+    expect(compactionMessages[0]?.message.id).toBe(compactionMessages[1]?.message.id);
+    expect(completed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        threadId: 'thread-manual-compact',
+        message: expect.objectContaining({
+          role: 'system',
+          content: 'Context compaction started.',
+          systemMeta: {
+            kind: 'context_compaction',
+            status: 'running',
+          },
+        }),
+      }),
+      expect.objectContaining({
+        threadId: 'thread-manual-compact',
+        message: expect.objectContaining({
+          role: 'system',
+          content: 'Context compacted. Continuing with a refreshed window.',
+          systemMeta: {
+            kind: 'context_compaction',
+            status: 'completed',
+          },
+        }),
+      }),
+    ]));
   });
 
   it('closes the previous query and ignores late events when the same thread restarts', async () => {

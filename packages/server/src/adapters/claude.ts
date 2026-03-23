@@ -19,6 +19,7 @@ import type {
   AgentOptionDef,
   AgentStatus,
   ContextUsage,
+  SystemMessageMeta,
   ThreadSummary,
   ToolCall,
 } from '@rca/shared';
@@ -72,6 +73,9 @@ interface ClaudeStreamState {
   streamedText: string;
   pendingText: string;
   pendingReasoning: string;
+  compactionMessageId?: string;
+  compactionCompleted: boolean;
+  compactionInProgress: boolean;
   resultReceived: boolean;
   stderrEmitted: boolean;
   emittedAssistantMessages: number;
@@ -269,7 +273,14 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   getStatus(): AgentStatus {
-    return { ...this.status };
+    return {
+      ...this.status,
+      contextUsage: this.status.contextUsage === null
+        ? null
+        : this.status.contextUsage
+          ? { ...this.status.contextUsage }
+          : undefined,
+    };
   }
 
   getStreamingState(threadId: string): ThreadStreamingState | null {
@@ -541,6 +552,20 @@ export class ClaudeAdapter implements AgentAdapter {
         threadId,
         agentType: 'claude',
         message: entry,
+      });
+    };
+
+    const emitSystemMessage = (
+      content: string,
+      systemMeta?: SystemMessageMeta,
+      messageId?: string,
+    ) => {
+      upsertAssistantMessage({
+        id: messageId || randomUUID(),
+        role: 'system',
+        content,
+        timestamp: Date.now(),
+        systemMeta,
       });
     };
 
@@ -847,6 +872,16 @@ export class ClaudeAdapter implements AgentAdapter {
         }
       }
 
+      if (hasClaudeCompactionIteration(sdkMessage) && !state.compactionCompleted) {
+        state.compactionCompleted = true;
+        state.compactionMessageId = state.compactionMessageId || `compaction:${runId}`;
+        emitSystemMessage(
+          'Context compacted. Continuing with a refreshed window.',
+          { kind: 'context_compaction', status: 'completed' },
+          state.compactionMessageId,
+        );
+      }
+
       if (!threadInfo.model) {
         threadInfo.model = pickClaudeModelFromUsage(sdkMessage.modelUsage);
       }
@@ -910,6 +945,32 @@ export class ClaudeAdapter implements AgentAdapter {
     const processSystemMessage = (sdkMessage: ClaudeSystemMessage) => {
       threadInfo.updatedAt = Date.now();
       threadInfo.sessionId = sdkMessage.session_id;
+
+      if (sdkMessage.subtype === 'status') {
+        const status = readString(sdkMessage as unknown as Record<string, unknown>, 'status');
+        if (status === 'compacting' && !state.compactionInProgress) {
+          state.compactionInProgress = true;
+          state.compactionMessageId = state.compactionMessageId || `compaction:${runId}`;
+          emitSystemMessage(
+            'Context compaction started.',
+            { kind: 'context_compaction', status: 'running' },
+            state.compactionMessageId,
+          );
+        } else if (!status) {
+          state.compactionInProgress = false;
+        }
+      }
+
+      if (sdkMessage.subtype === 'compact_boundary' && !state.compactionCompleted) {
+        state.compactionCompleted = true;
+        state.compactionInProgress = false;
+        state.compactionMessageId = state.compactionMessageId || `compaction:${runId}`;
+        emitSystemMessage(
+          'Context compacted. Continuing with a refreshed window.',
+          { kind: 'context_compaction', status: 'completed' },
+          state.compactionMessageId,
+        );
+      }
 
       if (sdkMessage.subtype === 'init') {
         threadInfo.model = sdkMessage.model;
@@ -1194,6 +1255,9 @@ export class ClaudeAdapter implements AgentAdapter {
       streamedText: '',
       pendingText: '',
       pendingReasoning: '',
+      compactionMessageId: undefined,
+      compactionCompleted: false,
+      compactionInProgress: false,
       resultReceived: false,
       stderrEmitted: false,
       emittedAssistantMessages: 0,
@@ -1378,6 +1442,10 @@ function readClaudeEffectiveIterationUsage(
   }
 
   return undefined;
+}
+
+function hasClaudeCompactionIteration(result: SDKResultMessage): boolean {
+  return readClaudeUsageIterations(result).some((iteration) => iteration.type === 'compaction');
 }
 
 function readClaudeUsageIterations(

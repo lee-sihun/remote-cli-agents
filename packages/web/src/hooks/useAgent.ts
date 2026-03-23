@@ -148,6 +148,10 @@ function reconcilePendingApprovals(
   );
 }
 
+function hasExplicitContextUsage(status: AgentStatus): boolean {
+  return Object.prototype.hasOwnProperty.call(status, 'contextUsage');
+}
+
 export const useAgentStore = create<AgentState>((set, get) => ({
   connectionStatus: 'disconnected',
 
@@ -445,11 +449,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             );
             if (threadIdx >= 0) {
               const updated = [...agentThreads];
+              const isVisibleConversationMessage = event.message.role !== 'system';
               updated[threadIdx] = {
                 ...updated[threadIdx],
-                lastMessage:
-                  event.message.content.slice(0, 100)
-                  || updated[threadIdx].lastMessage,
+                lastMessage: isVisibleConversationMessage
+                  ? event.message.content.slice(0, 100) || updated[threadIdx].lastMessage
+                  : updated[threadIdx].lastMessage,
                 messageCount: (messages.get(event.threadId) || []).length,
                 updatedAt: Date.now(),
               };
@@ -571,10 +576,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
               const threadIndex = agentThreads.findIndex((thread) => thread.id === activeThreadId);
               if (threadIndex >= 0) {
                 const updated = [...agentThreads];
+                const nextContextUsage = hasExplicitContextUsage(event.status)
+                  ? event.status.contextUsage || undefined
+                  : updated[threadIndex].contextUsage;
                 updated[threadIndex] = {
                   ...updated[threadIndex],
                   model: event.status.model || updated[threadIndex].model,
-                  contextUsage: event.status.contextUsage || updated[threadIndex].contextUsage,
+                  contextUsage: nextContextUsage,
                 };
                 threads.set(event.agentType, updated);
               }

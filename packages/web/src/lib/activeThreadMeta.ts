@@ -15,11 +15,16 @@ export function resolveActiveThreadMeta(
   }
 
   const statusMatchesActiveThread = agentStatus?.activeThread === activeThreadId;
+  const hasExplicitContextUsage = Boolean(
+    agentStatus && Object.prototype.hasOwnProperty.call(agentStatus, 'contextUsage'),
+  );
 
   return {
     model: activeThreadSummary?.model || (statusMatchesActiveThread ? agentStatus?.model : undefined),
     contextUsage: statusMatchesActiveThread
-      ? agentStatus?.contextUsage || activeThreadSummary?.contextUsage
+      ? hasExplicitContextUsage
+        ? agentStatus?.contextUsage || undefined
+        : activeThreadSummary?.contextUsage
       : activeThreadSummary?.contextUsage,
   };
 }

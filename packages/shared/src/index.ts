@@ -161,6 +161,13 @@ export const AGENT_OPTIONS: Record<AgentType, AgentOptionDef[]> = {
 
 // ─── Message Types ───
 
+export interface SystemMessageMeta {
+  /** 시스템 메시지 종류 */
+  kind: "context_compaction";
+  /** 시스템 메시지 진행 상태 */
+  status: "running" | "completed";
+}
+
 export interface AgentMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -174,6 +181,8 @@ export interface AgentMessage {
   costUsd?: number;
   /** 토큰 사용량 */
   usage?: { inputTokens: number; outputTokens: number };
+  /** 시스템 메시지 메타 */
+  systemMeta?: SystemMessageMeta;
 }
 
 export interface ToolCall {
@@ -230,7 +239,7 @@ export interface AgentStatus {
   state: "idle" | "running" | "waiting_approval" | "error";
   activeThread?: string;
   model?: string;
-  contextUsage?: ContextUsage;
+  contextUsage?: ContextUsage | null;
 }
 
 // ─── Agent Events ───

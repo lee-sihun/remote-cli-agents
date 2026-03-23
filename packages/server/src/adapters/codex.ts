@@ -8,6 +8,7 @@ import type {
   AgentOptionDef,
   AgentStatus,
   ContextUsage,
+  SystemMessageMeta,
   ThreadSummary,
   ToolCall,
 } from '@rca/shared';
@@ -72,6 +73,7 @@ interface ThreadInfo {
   contextUsageRevision?: number;
   awaitingPostCompactionUsageRefresh?: boolean;
   compactionStartUsageRevision?: number;
+  activeCompactionMessageId?: string;
   config?: AgentConfig;
   path?: string;
   workspaceId?: string;
@@ -262,7 +264,11 @@ export class CodexAdapter implements AgentAdapter {
   getStatus(): AgentStatus {
     return {
       ...this.status,
-      contextUsage: this.status.contextUsage ? { ...this.status.contextUsage } : undefined,
+      contextUsage: this.status.contextUsage === null
+        ? null
+        : this.status.contextUsage
+          ? { ...this.status.contextUsage }
+          : undefined,
     };
   }
 
@@ -1173,6 +1179,21 @@ export class CodexAdapter implements AgentAdapter {
     });
   }
 
+  private emitSystemMessage(
+    threadId: string,
+    content: string,
+    systemMeta?: SystemMessageMeta,
+    messageId?: string,
+  ): void {
+    this.upsertAssistantMessage(threadId, {
+      id: messageId || randomUUID(),
+      role: 'system',
+      content,
+      timestamp: Date.now(),
+      systemMeta,
+    });
+  }
+
   private markTurnActive(threadId: string, turnId: string): void {
     if (this.activeTurns.has(threadId)) {
       this.activeTurns.delete(threadId);
@@ -1194,6 +1215,13 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     thread.compactionStartUsageRevision = thread.contextUsageRevision || 0;
+    thread.activeCompactionMessageId = thread.activeCompactionMessageId || `compaction:${randomUUID()}`;
+    this.emitSystemMessage(
+      threadId,
+      'Context compaction started.',
+      { kind: 'context_compaction', status: 'running' },
+      thread.activeCompactionMessageId,
+    );
   }
 
   private handleThreadContextCompactionCompleted(threadId: string): void {
@@ -1215,10 +1243,19 @@ export class CodexAdapter implements AgentAdapter {
       persistThread(thread);
     }
 
-    if (this.status.activeThread === threadId && this.status.contextUsage) {
-      this.status.contextUsage = undefined;
+    if (this.status.activeThread === threadId) {
+      this.status.contextUsage = null;
       this.emitStatusChange();
     }
+
+    const compactionMessageId = thread.activeCompactionMessageId || `compaction:${randomUUID()}`;
+    this.emitSystemMessage(
+      threadId,
+      'Context compacted. Continuing with a refreshed window.',
+      { kind: 'context_compaction', status: 'completed' },
+      compactionMessageId,
+    );
+    thread.activeCompactionMessageId = undefined;
   }
 
   private currentActiveThread(): string | undefined {

@@ -471,4 +471,132 @@ describe('useAgentStore', () => {
       percentage: 0,
     });
   });
+
+  it('clears stale thread context usage when status_change explicitly resets it', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      threads: new Map([['codex', [{
+        id: 'thread-1',
+        agentType: 'codex',
+        title: 'Thread 1',
+        messageCount: 2,
+        createdAt: 1,
+        updatedAt: 2,
+        contextUsage: {
+          used: 1000,
+          total: 1000,
+          percentage: 100,
+        },
+      }]]]),
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'status_change',
+        agentType: 'codex',
+        status: {
+          agent: 'codex',
+          state: 'running',
+          activeThread: 'thread-1',
+          contextUsage: null,
+        },
+      },
+    });
+
+    const thread = useAgentStore.getState().threads.get('codex')?.[0];
+    expect(thread?.contextUsage).toBeUndefined();
+  });
+
+  it('does not overwrite thread previews with system messages', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      threads: new Map([['codex', [{
+        id: 'thread-1',
+        agentType: 'codex',
+        title: 'Thread 1',
+        lastMessage: 'Assistant reply',
+        messageCount: 2,
+        createdAt: 1,
+        updatedAt: 2,
+      }]]]),
+      messages: new Map([['thread-1', [{
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Assistant reply',
+        timestamp: 1,
+      }]]]),
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'message_complete',
+        agentType: 'codex',
+        threadId: 'thread-1',
+        message: {
+          id: 'system-1',
+          role: 'system',
+          content: 'Context compacted. Continuing with a refreshed window.',
+          timestamp: 3,
+        },
+      },
+    });
+
+    const thread = useAgentStore.getState().threads.get('codex')?.[0];
+    expect(thread?.lastMessage).toBe('Assistant reply');
+  });
+
+  it('replaces an in-progress compaction system message when the completed event reuses the same id', async () => {
+    const { useAgentStore } = await import('./useAgent.ts');
+
+    useAgentStore.setState({
+      messages: new Map([['thread-1', []]]),
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'message_complete',
+        agentType: 'claude',
+        threadId: 'thread-1',
+        message: {
+          id: 'compaction-1',
+          role: 'system',
+          content: 'Context compaction started.',
+          timestamp: 1,
+          systemMeta: {
+            kind: 'context_compaction',
+            status: 'running',
+          },
+        },
+      },
+    });
+
+    useAgentStore.getState().processServerMessage({
+      type: 'agent_event',
+      event: {
+        type: 'message_complete',
+        agentType: 'claude',
+        threadId: 'thread-1',
+        message: {
+          id: 'compaction-1',
+          role: 'system',
+          content: 'Context compacted. Continuing with a refreshed window.',
+          timestamp: 2,
+          systemMeta: {
+            kind: 'context_compaction',
+            status: 'completed',
+          },
+        },
+      },
+    });
+
+    const messages = useAgentStore.getState().messages.get('thread-1') || [];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.content).toBe('Context compacted. Continuing with a refreshed window.');
+    expect(messages[0]?.systemMeta?.status).toBe('completed');
+  });
 });

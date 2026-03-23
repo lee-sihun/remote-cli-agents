@@ -178,13 +178,28 @@ function MessageBubble({ message }: { message: AgentMessage }) {
   }
 
   if (message.role === 'system') {
+    const isCompactionMessage = message.systemMeta?.kind === 'context_compaction';
+    const isRunningCompaction = isCompactionMessage && message.systemMeta?.status === 'running';
+    const isCompletedCompaction = isCompactionMessage && message.systemMeta?.status === 'completed';
+
     return (
       <div className="flex justify-center mb-4 animate-fade-in">
         <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-(--bg-secondary) border border-(--border)">
-          <AlertCircle size={14} className="text-(--warning)" />
+          {isRunningCompaction ? (
+            <Loader2 size={14} className="text-(--warning) animate-spin" />
+          ) : isCompletedCompaction ? (
+            <Check size={14} className="text-(--success)" />
+          ) : (
+            <AlertCircle size={14} className="text-(--warning)" />
+          )}
           <span className="text-xs text-(--text-secondary)">
             {message.content}
           </span>
+          {isRunningCompaction && (
+            <div className="w-12 h-1 rounded-full bg-(--bg-tertiary) overflow-hidden">
+              <div className="w-1/2 h-full rounded-full bg-(--warning) animate-pulse" />
+            </div>
+          )}
         </div>
       </div>
     );
