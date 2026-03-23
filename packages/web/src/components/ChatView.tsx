@@ -130,6 +130,38 @@ function ReasoningBlock({ content }: { content: string }) {
   );
 }
 
+// ─── 공통 ReactMarkdown 커스텀 컴포넌트 ───
+
+const markdownComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
+  code({ className, children, ...props }) {
+    const match = /language-(\w+)/.exec(className || '');
+    const inline =
+      !className &&
+      typeof children === 'string' &&
+      !children.includes('\n');
+    if (inline) {
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      );
+    }
+    return (
+      <CodeBlock language={match?.[1]}>
+        {String(children).replace(/\n$/, '')}
+      </CodeBlock>
+    );
+  },
+  // 테이블 래퍼: 내부 스크롤로 가로 오버플로 격리
+  table({ children, node: _node, ...tableProps }) {
+    return (
+      <div className="markdown-table-wrap">
+        <table {...tableProps}>{children}</table>
+      </div>
+    );
+  },
+};
+
 // ─── Message Bubble ───
 
 function MessageBubble({ message }: { message: AgentMessage }) {
@@ -173,27 +205,7 @@ function MessageBubble({ message }: { message: AgentMessage }) {
             <div className="markdown-content text-sm">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
-                components={{
-                  code({ className, children, ...props }) {
-                    const match = /language-(\w+)/.exec(className || '');
-                    const inline =
-                      !className &&
-                      typeof children === 'string' &&
-                      !children.includes('\n');
-                    if (inline) {
-                      return (
-                        <code className={className} {...props}>
-                          {children}
-                        </code>
-                      );
-                    }
-                    return (
-                      <CodeBlock language={match?.[1]}>
-                        {String(children).replace(/\n$/, '')}
-                      </CodeBlock>
-                    );
-                  },
-                }}
+                components={markdownComponents}
               >
                 {message.content}
               </ReactMarkdown>
@@ -224,27 +236,7 @@ function StreamingBubble({ content, toolCalls }: { content: string; toolCalls?: 
             <div className="markdown-content text-sm">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
-                components={{
-                  code({ className, children, ...props }) {
-                    const match = /language-(\w+)/.exec(className || '');
-                    const inline =
-                      !className &&
-                      typeof children === 'string' &&
-                      !children.includes('\n');
-                    if (inline) {
-                      return (
-                        <code className={className} {...props}>
-                          {children}
-                        </code>
-                      );
-                    }
-                    return (
-                      <CodeBlock language={match?.[1]}>
-                        {String(children).replace(/\n$/, '')}
-                      </CodeBlock>
-                    );
-                  },
-                }}
+                components={markdownComponents}
               >
                 {content}
               </ReactMarkdown>

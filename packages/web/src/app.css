@@ -228,10 +228,19 @@ body {
   color: var(--text-secondary);
 }
 
+/* 테이블 래퍼: 가로 오버플로를 테이블 내부로 격리 */
+.markdown-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-bottom: 0.75rem;
+  border-radius: 0.375rem;
+}
+
 .markdown-content table {
   border-collapse: collapse;
-  width: 100%;
-  margin-bottom: 0.75rem;
+  width: max-content;
+  min-width: 100%;
+  margin-bottom: 0;
 }
 
 .markdown-content th, .markdown-content td {

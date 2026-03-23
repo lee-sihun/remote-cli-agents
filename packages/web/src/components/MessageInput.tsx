@@ -163,7 +163,8 @@ const MessageInput = ({
   );
 
   const handleInput = useCallback(() => {
-    const text = editorRef.current?.textContent || '';
+    // innerText는 <br>/<div> 줄바꿈을 \n으로 보존
+    const text = (editorRef.current?.innerText || '').replace(/\r\n/g, '\n');
     setValue(text);
   }, []);
 
@@ -179,7 +180,7 @@ const MessageInput = ({
 
   const handleCompositionEnd = useCallback(() => {
     isComposingRef.current = false;
-    const text = editorRef.current?.textContent || '';
+    const text = (editorRef.current?.innerText || '').replace(/\r\n/g, '\n');
     setValue(text);
   }, []);
 
@@ -195,7 +196,7 @@ const MessageInput = ({
   const visibleInputOptions = inputOptions.filter(isVisible);
   const visibleFooterOptions = footerOptions.filter(isVisible);
   const hasInputOptions = visibleInputOptions.length > 0;
-  const isEmpty = !value;
+  const isEmpty = !value.trim();
 
   return (
     <div className="p-3 sm:p-4">
