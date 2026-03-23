@@ -457,6 +457,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
     let sdkQuery: ClaudeSdkQuery;
     try {
+      const permissionMcpServer = readConfigString(runConfig, 'permissionMode') === 'bypassPermissions'
+        ? undefined
+        : this.buildPermissionMcpServer(threadId);
+
       sdkQuery = query({
         prompt: message,
         options: {
@@ -471,14 +475,14 @@ export class ClaudeAdapter implements AgentAdapter {
           allowDangerouslySkipPermissions: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions',
           resume: resumeSessionId,
           sessionId: resumeSessionId ? undefined : threadSessionId,
-          mcpServers: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions'
-            ? undefined
-            : {
-              [CLAUDE_PERMISSION_MCP_SERVER_KEY]: this.createPermissionMcpServer(threadId),
-            },
-          permissionPromptToolName: readConfigString(runConfig, 'permissionMode') === 'bypassPermissions'
-            ? undefined
-            : CLAUDE_PERMISSION_PROMPT_TOOL_NAME,
+          mcpServers: permissionMcpServer
+            ? {
+              [CLAUDE_PERMISSION_MCP_SERVER_KEY]: permissionMcpServer,
+            }
+            : undefined,
+          permissionPromptToolName: permissionMcpServer
+            ? CLAUDE_PERMISSION_PROMPT_TOOL_NAME
+            : undefined,
           stderr: (data) => {
             this.handleQueryStderr(threadId, runId, data);
           },
@@ -1007,7 +1011,39 @@ export class ClaudeAdapter implements AgentAdapter {
     return /request was aborted|ede_diagnostic|makeRequest|processTicksAndRejections/i.test(message);
   }
 
-  private createPermissionMcpServer(threadId: string) {
+  private buildPermissionMcpServer(threadId: string) {
+    const bridgeConfig = this.createPermissionBridgeMcpServer(threadId);
+    if (bridgeConfig) {
+      return bridgeConfig;
+    }
+
+    return this.createPermissionSdkMcpServer(threadId);
+  }
+
+  private createPermissionBridgeMcpServer(threadId: string) {
+    const { permissionApiBaseUrl, permissionApiToken, permissionBridgeScriptPath } = this.options;
+    if (!permissionApiBaseUrl || !permissionApiToken || !permissionBridgeScriptPath) {
+      return null;
+    }
+
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([, value]) => typeof value === 'string'),
+    ) as Record<string, string>;
+
+    return {
+      type: 'stdio' as const,
+      command: process.execPath,
+      args: [permissionBridgeScriptPath],
+      env: {
+        ...env,
+        RCA_CLAUDE_PERMISSION_API_URL: `${permissionApiBaseUrl}/api/internal/claude/permission-request`,
+        RCA_CLAUDE_PERMISSION_API_TOKEN: permissionApiToken,
+        RCA_CLAUDE_THREAD_ID: threadId,
+      },
+    };
+  }
+
+  private createPermissionSdkMcpServer(threadId: string) {
     return createSdkMcpServer({
       name: `${CLAUDE_PERMISSION_MCP_SERVER_KEY}-${threadId}`,
       tools: [

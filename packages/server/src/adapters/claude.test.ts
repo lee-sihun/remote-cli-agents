@@ -386,6 +386,33 @@ describe('ClaudeAdapter', () => {
     expect(runtimeCall?.options?.env).not.toHaveProperty('CLAUDECODE');
   });
 
+  it('prefers the external stdio permission bridge when bridge options are configured', async () => {
+    enqueueQueries(new FakeQuery(), new FakeQuery());
+
+    const { ClaudeAdapter } = await import('./claude.ts');
+    const adapter = new ClaudeAdapter({
+      permissionApiBaseUrl: 'http://127.0.0.1:9470',
+      permissionApiToken: 'internal-token',
+      permissionBridgeScriptPath: 'C:/bridge/claude-permission-bridge.mjs',
+    });
+    await adapter.start({ type: 'claude', cwd: 'C:/workspace' });
+
+    adapter.sendMessage('thread-bridge', 'hello');
+    await flushAsync();
+
+    const runtimeCall = queryMock.mock.calls[1]?.[0];
+    expect(runtimeCall?.options?.mcpServers?.['rca-permission']).toEqual(expect.objectContaining({
+      type: 'stdio',
+      command: process.execPath,
+      args: ['C:/bridge/claude-permission-bridge.mjs'],
+      env: expect.objectContaining({
+        RCA_CLAUDE_PERMISSION_API_URL: 'http://127.0.0.1:9470/api/internal/claude/permission-request',
+        RCA_CLAUDE_PERMISSION_API_TOKEN: 'internal-token',
+        RCA_CLAUDE_THREAD_ID: 'thread-bridge',
+      }),
+    }));
+  });
+
   it('resumes stored Claude threads with the persisted session id and config snapshot', async () => {
     storeState.threads.set('claude', [{
       id: 'thread-restored',
@@ -426,7 +453,7 @@ describe('ClaudeAdapter', () => {
     expect(runtimeCall?.options?.sessionId).toBeUndefined();
   });
 
-  it('emits approval_required through canUseTool and resolves after approve()', async () => {
+  it('emits approval_required and resolves after approve()', async () => {
     enqueueQueries(new FakeQuery(), new FakeQuery());
 
     const { ClaudeAdapter } = await import('./claude.ts');
@@ -440,12 +467,12 @@ describe('ClaudeAdapter', () => {
     adapter.sendMessage('thread-approval', 'hello');
     await flushAsync();
 
-    const permissionTool = queryMock.mock.calls[1]?.[0]?.options?.mcpServers?.['rca-permission']?.tools?.[0];
-    const permissionPromise = permissionTool?.handler({
-      tool_name: 'Edit',
-      input: { file_path: 'a.ts' },
-      tool_use_id: 'tool-1',
-    });
+    const permissionPromise = adapter.requestPermission(
+      'thread-approval',
+      'Edit',
+      { file_path: 'a.ts' },
+      'tool-1',
+    );
 
     expect(adapter.getStatus().state).toBe('waiting_approval');
     expect(events).toContainEqual({
@@ -463,14 +490,8 @@ describe('ClaudeAdapter', () => {
     adapter.approve('thread-approval', 'tool-1', true);
 
     await expect(permissionPromise).resolves.toEqual({
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          behavior: 'allow',
-          toolUseID: 'tool-1',
-          updatedInput: { file_path: 'a.ts' },
-        }),
-      }],
+      behavior: 'allow',
+      toolUseID: 'tool-1',
     });
     expect(adapter.getStatus().state).toBe('running');
   });
@@ -870,25 +891,20 @@ describe('ClaudeAdapter', () => {
     adapter.sendMessage('thread-permission-close', 'hello');
     await flushAsync();
 
-    const permissionTool = queryMock.mock.calls[1]?.[0]?.options?.mcpServers?.['rca-permission']?.tools?.[0];
-    const decisionPromise = permissionTool?.handler({
-      tool_name: 'Bash',
-      input: { command: 'rm -rf tmp' },
-      tool_use_id: 'tool-close',
-    });
+    const decisionPromise = adapter.requestPermission(
+      'thread-permission-close',
+      'Bash',
+      { command: 'rm -rf tmp' },
+      'tool-close',
+    );
 
     runtime.finish();
     await flushAsync();
 
     await expect(decisionPromise).resolves.toEqual({
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          behavior: 'deny',
-          message: 'Claude session ended before the permission request was answered.',
-          toolUseID: 'tool-close',
-        }),
-      }],
+      behavior: 'deny',
+      message: 'Claude session ended before the permission request was answered.',
+      toolUseID: 'tool-close',
     });
   });
 

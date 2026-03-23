@@ -134,6 +134,7 @@ export class CodexAdapter implements AgentAdapter {
   private pendingRequests = new Map<number, PendingRpcRequest>();
   private pendingApprovalRequests = new Map<string, PendingApprovalRequest>();
   private initialized = false;
+  private spawnPromise: Promise<void> | null = null;
   private status: AgentStatus = {
     agent: 'codex',
     state: 'idle',
@@ -150,7 +151,7 @@ export class CodexAdapter implements AgentAdapter {
   async start(config: AgentConfig): Promise<void> {
     this.config = normalizeCodexConfig(config);
     this.restoreStoredThreads();
-    await this.spawnAppServer();
+    await this.ensureAppServer();
     this.config = normalizeCodexConfig(this.config, this.configRequirements);
   }
 
@@ -160,6 +161,7 @@ export class CodexAdapter implements AgentAdapter {
     }
     this.process = null;
     this.initialized = false;
+    this.spawnPromise = null;
 
     for (const pending of this.pendingRequests.values()) {
       clearTimeout(pending.timer);
@@ -365,17 +367,13 @@ export class CodexAdapter implements AgentAdapter {
     }
 
     proc.on('close', (code) => {
-      this.initialized = false;
-      for (const pending of this.pendingRequests.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error(`Codex app-server exited with code ${String(code)}`));
-      }
-      this.pendingRequests.clear();
-      this.updateStatus('error');
+      this.handleAppServerClosed(code);
     });
 
     proc.on('error', (err) => {
       console.error(`[codex] Failed to spawn: ${err.message}`);
+      this.process = null;
+      this.initialized = false;
       this.updateStatus('error');
     });
 
@@ -389,6 +387,24 @@ export class CodexAdapter implements AgentAdapter {
     this.initialized = true;
     await this.refreshModels();
     await this.refreshConfigRequirements();
+  }
+
+  private async ensureAppServer(): Promise<void> {
+    if (this.initialized && this.isProcessInputWritable()) {
+      return;
+    }
+
+    if (this.spawnPromise) {
+      await this.spawnPromise;
+      return;
+    }
+
+    this.spawnPromise = this.spawnAppServer()
+      .finally(() => {
+        this.spawnPromise = null;
+      });
+
+    await this.spawnPromise;
   }
 
   private async refreshModels(): Promise<void> {
@@ -461,6 +477,7 @@ export class CodexAdapter implements AgentAdapter {
     });
 
     try {
+      await this.ensureAppServer();
       await this.ensureThreadLoaded(thread, config, threadExists);
       if (!thread.remoteThreadId) {
         throw new Error('Codex thread id was not initialized');
@@ -562,7 +579,7 @@ export class CodexAdapter implements AgentAdapter {
 
   private sendRpc(method: string, params?: Record<string, unknown>, timeoutMs = 30_000): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      if (!this.process || !this.process.stdin) {
+      if (!this.isProcessInputWritable()) {
         reject(new Error('Codex app-server is not running'));
         return;
       }
@@ -589,16 +606,75 @@ export class CodexAdapter implements AgentAdapter {
       }, timeoutMs);
 
       this.pendingRequests.set(id, { method, resolve, reject, timer });
-      this.writeJson(request as unknown as Record<string, unknown>);
+      if (!this.writeJson(request as unknown as Record<string, unknown>)) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(id);
+        reject(new Error('Failed to write to Codex app-server stdin'));
+      }
     });
   }
 
-  private writeJson(payload: Record<string, unknown>): void {
-    if (!this.process?.stdin) {
-      return;
+  private writeJson(payload: Record<string, unknown>): boolean {
+    if (!this.isProcessInputWritable()) {
+      return false;
     }
 
-    this.process.stdin.write(`${JSON.stringify(payload)}\n`);
+    try {
+      return this.process!.stdin!.write(`${JSON.stringify(payload)}\n`) !== false;
+    } catch (error) {
+      debugError('[codex] Failed to write JSON-RPC payload', error);
+      return false;
+    }
+  }
+
+  private isProcessInputWritable(): boolean {
+    const stdin = this.process?.stdin as ({
+      write: (chunk: string) => boolean;
+      destroyed?: boolean;
+      writableEnded?: boolean;
+    }) | null | undefined;
+
+    if (!stdin) {
+      return false;
+    }
+
+    return !stdin.destroyed && !stdin.writableEnded;
+  }
+
+  private handleAppServerClosed(code: number | null): void {
+    const errorMessage = `Codex app-server exited with code ${String(code)}`;
+    this.initialized = false;
+    this.process = null;
+
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(errorMessage));
+    }
+    this.pendingRequests.clear();
+
+    const affectedThreadIds = new Set<string>([
+      ...this.activeTurns.keys(),
+      ...Array.from(this.pendingApprovalRequests.values(), (request) => request.threadId),
+    ]);
+
+    for (const threadId of affectedThreadIds) {
+      this.flushAssistantText(threadId);
+      this.abandonActiveTools(threadId);
+      this.emit({
+        type: 'error',
+        threadId,
+        agentType: 'codex',
+        error: errorMessage,
+      });
+    }
+
+    this.pendingApprovalRequests.clear();
+    this.loadedThreadIds.clear();
+    this.activeTurns.clear();
+    this.accumulatedText.clear();
+    this.currentMessageIds.clear();
+    this.activeToolCalls.clear();
+    this.updateStatus('error');
   }
 
   private handleLine(line: string): void {

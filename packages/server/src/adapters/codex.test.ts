@@ -1980,4 +1980,146 @@ describe('CodexAdapter', () => {
     adapter.approve('thread-approval-interrupt', 'cmd-interrupt', true);
     expect(writes.some((entry) => entry.includes('"id":92') && entry.includes('"decision":"approved"'))).toBe(false);
   });
+
+  it('abandons active Codex approval tools on app-server exit and respawns on the next turn', async () => {
+    const procA = createFakeChildProcess();
+    const procB = createFakeChildProcess();
+    childProcessMock.spawn
+      .mockReturnValueOnce(procA)
+      .mockReturnValueOnce(procB);
+
+    wireCodexRpc(procA, (request) => {
+      if (request.method === 'initialize') {
+        procA.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        procA.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        procA.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/start') {
+        procA.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-exit',
+              createdAt: 1,
+              updatedAt: 1,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        procA.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-exit-1',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    wireCodexRpc(procB, (request) => {
+      if (request.method === 'initialize') {
+        procB.stdout.write(`${JSON.stringify({ id: request.id, result: { userAgent: 'codex-test' } })}\n`);
+      }
+      if (request.method === 'configRequirements/read') {
+        procB.stdout.write(`${JSON.stringify({ id: request.id, result: { requirements: null } })}\n`);
+      }
+      if (request.method === 'model/list') {
+        procB.stdout.write(`${JSON.stringify({ id: request.id, result: { data: [] } })}\n`);
+      }
+      if (request.method === 'thread/resume') {
+        procB.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            thread: {
+              id: 'thread-exit',
+              createdAt: 1,
+              updatedAt: 2,
+              cwd: 'C:/workspace',
+            },
+            model: 'gpt-5.4',
+          },
+        })}\n`);
+      }
+      if (request.method === 'turn/start') {
+        procB.stdout.write(`${JSON.stringify({
+          id: request.id,
+          result: {
+            turn: {
+              id: 'turn-exit-2',
+              status: 'inProgress',
+              error: null,
+            },
+          },
+        })}\n`);
+      }
+    });
+
+    const { CodexAdapter } = await import('./codex.ts');
+    const adapter = new CodexAdapter();
+    const events: AgentEvent[] = [];
+    adapter.onEvent((event) => events.push(event));
+    await adapter.start({ type: 'codex', cwd: 'C:/workspace' });
+
+    adapter.sendMessage('thread-exit', 'first turn', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    procA.stdout.write(`${JSON.stringify({
+      method: 'turn/started',
+      params: {
+        threadId: 'thread-exit',
+        turn: {
+          id: 'turn-exit-1',
+          status: 'inProgress',
+          error: null,
+        },
+      },
+    })}\n`);
+    procA.stdout.write(`${JSON.stringify({
+      id: 93,
+      method: 'item/commandExecution/requestApproval',
+      params: {
+        threadId: 'thread-exit',
+        itemId: 'cmd-exit',
+        command: 'npm test',
+        cwd: 'C:/workspace',
+      },
+    })}\n`);
+    await flushStreamEvents();
+
+    procA.emit('close', 7);
+    await flushStreamEvents();
+
+    const toolComplete = events.filter((event): event is Extract<AgentEvent, { type: 'tool_complete' }> => (
+      event.type === 'tool_complete'
+    ));
+    expect(toolComplete.at(-1)?.tool).toMatchObject({
+      id: 'cmd-exit',
+      status: 'abandoned',
+    });
+    expect(events).toContainEqual({
+      type: 'error',
+      threadId: 'thread-exit',
+      agentType: 'codex',
+      error: 'Codex app-server exited with code 7',
+    });
+    expect(adapter.getStatus().state).toBe('error');
+
+    adapter.sendMessage('thread-exit', 'second turn', { type: 'codex', cwd: 'C:/workspace' });
+    await flushStreamEvents();
+
+    expect(childProcessMock.spawn).toHaveBeenCalledTimes(2);
+    expect(procB.stdin.write).toHaveBeenCalled();
+    const secondWrites = procB.stdin.write.mock.calls.map(([chunk]) => String(chunk));
+    expect(secondWrites.some((chunk) => chunk.includes('"method":"thread/resume"'))).toBe(true);
+  });
 });
