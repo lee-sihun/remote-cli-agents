@@ -83,7 +83,7 @@ interface PendingRpcRequest {
   method: string;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface PendingApprovalRequest {
@@ -583,7 +583,7 @@ export class CodexAdapter implements AgentAdapter {
     this.updateThreadFromPayload(thread, result.thread, result.model, config);
   }
 
-  private sendRpc(method: string, params?: Record<string, unknown>, timeoutMs = 30_000): Promise<unknown> {
+  private sendRpc(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.isProcessInputWritable()) {
         reject(new Error('Codex app-server is not running'));
@@ -600,20 +600,24 @@ export class CodexAdapter implements AgentAdapter {
 
       debugLog(`[codex rpc ->] ${method} ${formatCodexLog(params || {})}`);
 
-      const timer = setTimeout(() => {
-        const pending = this.pendingRequests.get(id);
-        if (!pending) {
-          return;
-        }
+      const timer = timeoutMs && timeoutMs > 0
+        ? setTimeout(() => {
+          const pending = this.pendingRequests.get(id);
+          if (!pending) {
+            return;
+          }
 
-        this.pendingRequests.delete(id);
-        debugError(`[codex rpc !!] ${method} timeout`);
-        pending.reject(new Error(`RPC timeout: ${method}`));
-      }, timeoutMs);
+          this.pendingRequests.delete(id);
+          debugError(`[codex rpc !!] ${method} timeout`);
+          pending.reject(new Error(`RPC timeout: ${method}`));
+        }, timeoutMs)
+        : undefined;
 
       this.pendingRequests.set(id, { method, resolve, reject, timer });
       if (!this.writeJson(request as unknown as Record<string, unknown>)) {
-        clearTimeout(timer);
+        if (timer) {
+          clearTimeout(timer);
+        }
         this.pendingRequests.delete(id);
         reject(new Error('Failed to write to Codex app-server stdin'));
       }
@@ -653,7 +657,9 @@ export class CodexAdapter implements AgentAdapter {
     this.process = null;
 
     for (const pending of this.pendingRequests.values()) {
-      clearTimeout(pending.timer);
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
       pending.reject(new Error(errorMessage));
     }
     this.pendingRequests.clear();
@@ -707,7 +713,9 @@ export class CodexAdapter implements AgentAdapter {
         return;
       }
 
-      clearTimeout(pending.timer);
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
       this.pendingRequests.delete(parsed.id);
 
       if ('error' in parsed) {

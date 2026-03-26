@@ -41,7 +41,6 @@ interface ThreadInfo {
   updatedAt: number;
   cwd?: string;
   workspaceId?: string;
-  timeout?: ReturnType<typeof setTimeout>;
   contextUsage?: ContextUsage;
   config?: AgentConfig;
 }
@@ -123,9 +122,6 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async stop(): Promise<void> {
     for (const [, thread] of this.threads) {
-      if (thread.timeout) {
-        clearTimeout(thread.timeout);
-      }
       this.rejectPendingApprovalsForThread(thread.id, 'Claude session stopped before the permission request was answered.');
       this.closeThreadQuery(thread);
     }
@@ -152,9 +148,6 @@ export class ClaudeAdapter implements AgentAdapter {
 
     if (existingThread && this.isQueryActive(existingThread)) {
       debugLog(`[claude] Closing existing query for thread ${tid} before new message`);
-      if (existingThread.timeout) {
-        clearTimeout(existingThread.timeout);
-      }
       this.rejectPendingApprovalsForThread(tid, 'Claude session restarted before the permission request was answered.');
       this.closeThreadQuery(existingThread);
     }
@@ -334,9 +327,6 @@ export class ClaudeAdapter implements AgentAdapter {
       return;
     }
 
-    if (thread.timeout) {
-      clearTimeout(thread.timeout);
-    }
     this.rejectPendingApprovalsForThread(threadId, 'Claude session was deleted.');
     this.closeThreadQuery(thread);
 
@@ -513,14 +503,6 @@ export class ClaudeAdapter implements AgentAdapter {
     }
 
     threadInfo.query = sdkQuery;
-    threadInfo.timeout = setTimeout(() => {
-      if (!this.isCurrentRun(threadId, runId, sdkQuery)) {
-        return;
-      }
-
-      debugError(`[claude] Query timeout (5min) for thread ${threadId}`);
-      sdkQuery.close();
-    }, 5 * 60 * 1000);
 
     try {
       const init = await sdkQuery.initializationResult();
@@ -1030,9 +1012,6 @@ export class ClaudeAdapter implements AgentAdapter {
       }
     } finally {
       const wasInterrupted = this.interruptedRuns.delete(this.getRunKey(threadId, runId));
-      if (threadInfo.timeout) {
-        clearTimeout(threadInfo.timeout);
-      }
       if (!this.isCurrentRun(threadId, runId, sdkQuery)) {
         return;
       }
@@ -1049,7 +1028,6 @@ export class ClaudeAdapter implements AgentAdapter {
       );
       threadInfo.query = undefined;
       threadInfo.runId = undefined;
-      threadInfo.timeout = undefined;
 
       const nextActiveThread = Array.from(this.threads.values()).find((thread) => this.isQueryActive(thread));
       if (nextActiveThread) {
