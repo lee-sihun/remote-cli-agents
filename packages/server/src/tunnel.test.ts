@@ -1,14 +1,29 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { TUNNEL_URL_PATTERN, startQuickTunnel } from './tunnel.js';
+import { TUNNEL_URL_PATTERN, ensureBinary, resolveBinary, startQuickTunnel } from './tunnel.js';
 
 // node:child_process mock
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+vi.mock('node:fs', () => ({
+  existsSync: vi.fn(),
+}));
+
+vi.mock('cloudflared', () => ({
+  bin: '/mock/cloudflared',
+  install: vi.fn(async () => '/mock/cloudflared'),
+}));
+
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 const mockSpawn = vi.mocked(spawn);
+const mockExistsSync = vi.mocked(existsSync);
+
+async function loadCloudflaredModule() {
+  return await import('cloudflared');
+}
 
 // spawn이 반환하는 가짜 ChildProcess
 function makeFakeProc() {
@@ -25,6 +40,7 @@ function makeFakeProc() {
 
 afterEach(() => {
   vi.clearAllMocks();
+  mockExistsSync.mockReturnValue(true);
 });
 
 describe('TUNNEL_URL_PATTERN', () => {
@@ -40,6 +56,33 @@ describe('TUNNEL_URL_PATTERN', () => {
 });
 
 describe('startQuickTunnel', () => {
+  it('패키지 바이너리가 없으면 자동 설치 후 경로 반환', async () => {
+    const mod = await loadCloudflaredModule();
+    const install = vi.mocked(mod.install);
+    mockExistsSync.mockReturnValue(false);
+
+    const binaryPath = await ensureBinary();
+
+    expect(binaryPath).toBe('/mock/cloudflared');
+    expect(install).toHaveBeenCalledWith('/mock/cloudflared', 'latest');
+  });
+
+  it('패키지 바이너리가 이미 있으면 설치를 건너뜀', async () => {
+    const mod = await loadCloudflaredModule();
+    const install = vi.mocked(mod.install);
+    mockExistsSync.mockReturnValue(true);
+
+    const binaryPath = await ensureBinary();
+
+    expect(binaryPath).toBe('/mock/cloudflared');
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it('resolveBinary는 패키지 바이너리 경로를 우선 반환', async () => {
+    const binaryPath = await resolveBinary();
+    expect(binaryPath).toBe('/mock/cloudflared');
+  });
+
   it('stdout에서 URL 파싱 시 TunnelResult 반환', async () => {
     const proc = makeFakeProc();
     mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
